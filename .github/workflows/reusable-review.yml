@@ -6,7 +6,7 @@ on:
       max_turns:
         description: "Max conversation turns for cost control"
         required: false
-        default: "10"
+        default: "5"
         type: string
     secrets:
       ZAI_AUTH_TOKEN:
@@ -40,10 +40,6 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ZAI_AUTH_TOKEN }}
           show_full_output: true
-          plugin_marketplaces: |
-            https://github.com/anthropics/claude-code.git
-          plugins: |
-            code-review@claude-code-plugins
           settings: |
             {
               "env": {
@@ -54,6 +50,24 @@ jobs:
             }
           claude_args: |
             --max-turns ${{ inputs.max_turns }}
-            --allowed-tools "Bash(gh:*),Bash(grep:*),Bash(head:*),Bash(cat:*),Read,Grep,Glob,Skill,Agent,Edit,Write"
+            --allowed-tools "Bash(gh:*),Bash(grep:*),Bash(head:*),Bash(cat:*),Read,Grep,Glob"
           prompt: |
-            Run /code-review --comment on PR #${{ github.event.pull_request.number }}.
+            You are reviewing PR #${{ github.event.pull_request.number }}.
+
+            ## Instructions
+            1. Get the diff: `gh pr diff ${{ github.event.pull_request.number }}`
+            2. If a CLAUDE.md file exists in the repo root, read it for project rules
+            3. Review ONLY the new/changed code in the diff for:
+               - Bugs, logic errors, missing edge cases
+               - Security issues
+               - CLAUDE.md violations (if file exists)
+               - Missing error handling
+            4. Post a single summary comment with findings using:
+               `gh pr comment ${{ github.event.pull_request.number }} --body "..."`
+
+            ## Rules
+            - Do NOT read source files beyond the diff unless absolutely needed
+            - Focus on HIGH-CONFIDENCE issues only (things that will definitely break)
+            - If no significant issues found, comment: "✅ No significant issues found."
+            - Keep the review concise and actionable
+            - Format each issue as: **[severity]** file:line — description
