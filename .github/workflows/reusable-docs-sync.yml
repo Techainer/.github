@@ -6,7 +6,7 @@ on:
       max_turns:
         description: "Max conversation turns"
         required: false
-        default: "15"
+        default: "8"
         type: string
     secrets:
       ZAI_AUTH_TOKEN:
@@ -34,7 +34,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           anthropic_api_key: ${{ secrets.ZAI_AUTH_TOKEN }}
-          show_full_output: true
           settings: |
             {
               "env": {
@@ -45,18 +44,67 @@ jobs:
             }
           claude_args: |
             --max-turns ${{ inputs.max_turns }}
-            --allowed-tools "Read,Write,Edit,Bash(git:*),Bash(gh:*),Grep,Glob"
+            --allowed-tools "Read,Write,Edit,Bash(git:*),Bash(gh:*),Bash(grep:*),Bash(find:*),Bash(cat:*),Grep,Glob"
           prompt: |
-            A PR was just merged. Review the changes and update documentation if needed.
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR TITLE: ${{ github.event.pull_request.title }}
 
-            ## Documentation Tasks
+            A PR was just merged into this repository. Your job is to keep documentation
+            in sync with code changes. Follow these steps precisely.
 
-            1. Check CLAUDE.md - update if architecture patterns, conventions, or guidelines changed
-            2. Check README.md - update if API endpoints, configuration, or setup steps changed
-            3. Check inline docs - ensure new public methods have docstrings
+            ## Step 1: Understand What Changed (1 turn)
+            Run: `gh pr diff ${{ github.event.pull_request.number }}`
+            Analyze the diff to determine WHAT areas of the codebase were modified.
+
+            ## Step 2: Check Which Docs Need Updates (1 turn)
+            Based on the diff, check ONLY the relevant documentation files:
+
+            **CLAUDE.md** — Update if ANY of these changed:
+            - Project architecture or module structure
+            - Development commands (build, test, run)
+            - Coding conventions or patterns
+            - Key dependencies or configuration
+            - New modules, plugins, or pipeline components
+
+            **README.md** — Update if ANY of these changed:
+            - API endpoints (new, modified, removed)
+            - Installation or setup steps
+            - Configuration options or environment variables
+            - Usage examples or quickstart guide
+            - System requirements or dependencies
+
+            **Inline docstrings** — Update if:
+            - New public functions/classes added without docstrings
+            - Existing function signatures changed (params, return types)
+            - Function behavior changed but docstring is stale
+
+            ## Step 3: Make Updates (1-3 turns)
+            For each doc that needs updating:
+            1. Read the current doc file
+            2. Make targeted edits — do NOT rewrite entire files
+            3. Keep the existing tone, format, and structure
+            4. Add new sections at logical positions
+            5. Remove outdated information that conflicts with new code
+
+            ## Step 4: Commit & Report (1 turn)
+            If changes were made:
+            ```bash
+            git add -A
+            git commit -m "docs: sync documentation after PR #${{ github.event.pull_request.number }}
+
+            Updated based on: ${{ github.event.pull_request.title }}"
+            git push
+            ```
+            Then comment on the PR: `gh pr comment ${{ github.event.pull_request.number }} --body "📝 Documentation updated: [list files changed]"`
+
+            If NO docs need updating:
+            Comment: `gh pr comment ${{ github.event.pull_request.number }} --body "📝 No documentation updates needed — reviewed CLAUDE.md, README.md, and inline docs."`
 
             ## Rules
-            - Only update docs that are actually outdated by this PR
+            - ONLY update docs that are actually outdated by this specific PR
+            - Do NOT add speculative documentation for features not in the diff
+            - Do NOT change code files — documentation only
             - Keep examples matching current code patterns
-            - If no docs need updating, comment on the PR explaining why
-            - Commit changes with descriptive message if updates are made
+            - Preserve existing formatting and section ordering
+            - If unsure whether a doc needs updating, err on the side of NOT updating

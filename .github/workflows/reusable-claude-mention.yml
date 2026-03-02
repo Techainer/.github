@@ -6,7 +6,7 @@ on:
       max_turns:
         description: "Max conversation turns"
         required: false
-        default: "20"
+        default: "15"
         type: string
     secrets:
       ZAI_AUTH_TOKEN:
@@ -21,7 +21,7 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
       id-token: write
@@ -39,7 +39,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           anthropic_api_key: ${{ secrets.ZAI_AUTH_TOKEN }}
-          show_full_output: true
           settings: |
             {
               "env": {
