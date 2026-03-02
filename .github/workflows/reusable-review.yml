@@ -54,4 +54,4 @@ jobs:
             --max-turns ${{ inputs.max_turns }}
             --allowed-tools "Bash(gh:*),Read,Grep,Glob,Skill,Agent,Edit,Write"
           prompt: |
-            Run /code-review --comment on this PR.
+            Run /code-review --comment on PR #${{ github.event.pull_request.number }}.
