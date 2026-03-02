@@ -41,7 +41,7 @@ jobs:
           plugin_marketplaces: |
             https://github.com/anthropics/claude-code.git
           plugins: |
-            code-review@claude-code
+            code-review@claude-code-plugins
           settings: |
             {
               "env": {
