@@ -38,8 +38,10 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ZAI_AUTH_TOKEN }}
           show_full_output: true
+          plugin_marketplaces: |
+            https://github.com/anthropics/claude-code.git
           plugins: |
-            anthropics/claude-code/plugins/code-review
+            code-review@claude-code
           settings: |
             {
               "env": {
