@@ -6,7 +6,7 @@ on:
       max_turns:
         description: "Max conversation turns for cost control"
         required: false
-        default: "5"
+        default: "6"
         type: string
     secrets:
       ZAI_AUTH_TOKEN:
@@ -39,7 +39,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           anthropic_api_key: ${{ secrets.ZAI_AUTH_TOKEN }}
-          show_full_output: true
           settings: |
             {
               "env": {
@@ -50,24 +49,86 @@ jobs:
             }
           claude_args: |
             --max-turns ${{ inputs.max_turns }}
-            --allowed-tools "Bash(gh:*),Bash(grep:*),Bash(head:*),Bash(cat:*),Read,Grep,Glob"
+            --allowed-tools "Bash(gh:*),Bash(grep:*),Bash(head:*),Bash(cat:*),Bash(wc:*),Bash(find:*),Read,Grep,Glob"
           prompt: |
-            You are reviewing PR #${{ github.event.pull_request.number }}.
+            You are a senior code reviewer. Review PR #${{ github.event.pull_request.number }} in this repository.
 
-            ## Instructions
-            1. Get the diff: `gh pr diff ${{ github.event.pull_request.number }}`
-            2. If a CLAUDE.md file exists in the repo root, read it for project rules
-            3. Review ONLY the new/changed code in the diff for:
-               - Bugs, logic errors, missing edge cases
-               - Security issues
-               - CLAUDE.md violations (if file exists)
-               - Missing error handling
-            4. Post a single summary comment with findings using:
-               `gh pr comment ${{ github.event.pull_request.number }} --body "..."`
+            ## Step 1: Gather Context (1 turn)
+            Run these commands in a single turn:
+            - `gh pr diff ${{ github.event.pull_request.number }}` to get the full diff
+            - Check if `CLAUDE.md` exists in repo root; if yes, read it for project-specific rules
+
+            ## Step 2: Analyze (in your head, no tools needed)
+            Review ONLY the new/changed lines in the diff. Check for:
+
+            **Bugs & Logic Errors**
+            - Syntax errors preventing compilation
+            - Type mismatches or missing type handling
+            - Off-by-one errors, null/None handling
+            - Race conditions or concurrency issues
+            - Unresolved references or missing imports
+
+            **Security**
+            - SQL injection, XSS, command injection
+            - Hardcoded secrets or credentials
+            - Insecure deserialization
+            - Missing input validation or sanitization
+
+            **Error Handling**
+            - Bare except clauses catching too broadly
+            - Swallowed exceptions hiding failures
+            - Missing error cases or cleanup
+            - Incorrect error propagation
+
+            **Architecture & Design**
+            - CLAUDE.md violations (naming, patterns, conventions)
+            - Code duplication that should be extracted
+            - Breaking changes without migration path
+            - API contract violations
+
+            **Performance**
+            - N+1 queries or unbounded loops
+            - Missing pagination on large datasets
+            - Unnecessary blocking I/O in async context
+
+            ## Step 3: Post Review (1 turn)
+            Use `gh pr comment ${{ github.event.pull_request.number }} --body "<review>"` to post.
+
+            Format your review as:
+
+            ```
+            ## 🔍 Code Review — PR #${{ github.event.pull_request.number }}
+
+            ### Summary
+            [1-2 sentence summary of what the PR does and overall assessment]
+
+            ### Issues Found
+
+            #### 🔴 Critical (Must Fix)
+            [Bugs, security issues, data loss risks — things that WILL break in production]
+            - **file:line** — Description. Why it matters. Suggested fix.
+
+            #### 🟡 Important (Should Fix)
+            [Architecture problems, poor error handling, missing edge cases]
+            - **file:line** — Description. Why it matters.
+
+            #### 🔵 Minor (Nice to Have)
+            [Style, optimization, documentation improvements]
+            - **file:line** — Description.
+
+            ### ✅ What's Done Well
+            [Acknowledge 1-2 specific strengths — be genuine, not performative]
+
+            ### Verdict: [✅ Approve | ⚠️ Approve with suggestions | ❌ Request changes]
+            [1 sentence reasoning]
+            ```
 
             ## Rules
-            - Do NOT read source files beyond the diff unless absolutely needed
-            - Focus on HIGH-CONFIDENCE issues only (things that will definitely break)
-            - If no significant issues found, comment: "✅ No significant issues found."
-            - Keep the review concise and actionable
-            - Format each issue as: **[severity]** file:line — description
+            - Only flag HIGH-CONFIDENCE issues visible in the diff
+            - Do NOT read source files beyond the diff unless critical for understanding
+            - Do NOT flag style preferences — focus on correctness
+            - If a section has no issues, write "None found." — don't omit the section
+            - If no significant issues at all, give ✅ Approve with brief positive note
+            - Be specific: always include file:line references
+            - Be concise: each issue ≤ 2 sentences
+            - Categorize by ACTUAL severity — not everything is Critical
