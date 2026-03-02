@@ -1,0 +1,58 @@
+name: Reusable Claude Docs Sync
+
+on:
+  workflow_call:
+    inputs:
+      max_turns:
+        description: "Max conversation turns"
+        required: false
+        default: "15"
+        type: string
+    secrets:
+      ZAI_AUTH_TOKEN:
+        required: true
+
+jobs:
+  doc-sync:
+    if: ${{ github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Run Claude Documentation Update
+        uses: anthropics/claude-code-action@v1
+        with:
+          settings: |
+            {
+              "env": {
+                "ANTHROPIC_AUTH_TOKEN": "${{ secrets.ZAI_AUTH_TOKEN }}",
+                "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "GLM-4.7"
+              }
+            }
+          claude_args: |
+            --max-turns ${{ inputs.max_turns }}
+            --allowed-tools "Read,Write,Edit,Bash(git:*),Bash(gh:*),Grep,Glob"
+          prompt: |
+            A PR was just merged. Review the changes and update documentation if needed.
+
+            ## Documentation Tasks
+
+            1. Check CLAUDE.md - update if architecture patterns, conventions, or guidelines changed
+            2. Check README.md - update if API endpoints, configuration, or setup steps changed
+            3. Check inline docs - ensure new public methods have docstrings
+
+            ## Rules
+            - Only update docs that are actually outdated by this PR
+            - Keep examples matching current code patterns
+            - If no docs need updating, comment on the PR explaining why
+            - Commit changes with descriptive message if updates are made
