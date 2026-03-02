@@ -6,7 +6,7 @@ on:
       max_turns:
         description: "Max conversation turns for cost control"
         required: false
-        default: "15"
+        default: "10"
         type: string
     secrets:
       ZAI_AUTH_TOKEN:
@@ -23,6 +23,8 @@ jobs:
       contents: read
       pull-requests: write
       issues: read
+      checks: read
+      statuses: read
       id-token: write
 
     steps:
@@ -52,6 +54,6 @@ jobs:
             }
           claude_args: |
             --max-turns ${{ inputs.max_turns }}
-            --allowed-tools "Bash(gh:*),Read,Grep,Glob,Skill,Agent,Edit,Write"
+            --allowed-tools "Bash(gh:*),Bash(grep:*),Bash(head:*),Bash(cat:*),Read,Grep,Glob,Skill,Agent,Edit,Write"
           prompt: |
             Run /code-review --comment on PR #${{ github.event.pull_request.number }}.
