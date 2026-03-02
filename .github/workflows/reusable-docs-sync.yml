@@ -31,6 +31,7 @@ jobs:
       - name: Run Claude Documentation Update
         uses: anthropics/claude-code-action@v1
         with:
+          anthropic_api_key: ${{ secrets.ZAI_AUTH_TOKEN }}
           settings: |
             {
               "env": {
