@@ -35,8 +35,11 @@ jobs:
 
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           anthropic_api_key: ${{ secrets.ZAI_AUTH_TOKEN }}
+          show_full_output: true
           settings: |
             {
               "env": {
