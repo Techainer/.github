@@ -52,6 +52,6 @@ jobs:
             }
           claude_args: |
             --max-turns ${{ inputs.max_turns }}
-            --allowed-tools "Bash(gh:*),Read,Grep,Glob"
+            --allowed-tools "Bash(gh:*),Read,Grep,Glob,Skill,Agent,Edit,Write"
           prompt: |
             Run /code-review --comment on this PR.
