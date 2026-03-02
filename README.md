@@ -1,14 +1,14 @@
 # Techainer Shared GitHub Configuration
 
-Centralized reusable workflows for AI-powered code review across all Techainer repositories.
+Centralized reusable workflows for AI-powered code review and documentation sync across all Techainer repositories.
 
 ## Reusable Workflows
 
 | Workflow | Description | Trigger |
 |----------|-------------|---------|
-| `reusable-review.yml` | Automated PR code review using Claude's `/code-review` plugin (4 parallel agents + confidence scoring) | `pull_request: opened, synchronize, reopened` |
+| `reusable-review.yml` | Automated PR code review — single-pass analysis covering bugs, security, error handling, architecture, and performance | `pull_request: opened, synchronize, reopened` |
 | `reusable-claude-mention.yml` | Interactive `@claude` mention handler in PRs & issues | `@claude` in comments |
-| `reusable-docs-sync.yml` | Auto-update documentation (CLAUDE.md, README.md) after PR merge | `pull_request: closed (merged)` |
+| `reusable-docs-sync.yml` | Auto-update documentation (CLAUDE.md, README.md, docstrings) after PR merge | `pull_request: closed (merged)` |
 
 ## Setup for a New Repository
 
@@ -71,7 +71,7 @@ jobs:
 
 ### 3. Create `CLAUDE.md` in Your Repository
 
-Write project-specific rules. The review plugin reads this file automatically.
+Write project-specific rules. The review reads this file automatically.
 
 Example:
 ```markdown
@@ -89,9 +89,39 @@ Add the label `skip-review` to any PR to bypass automatic code review.
 
 ## How It Works
 
-The `/code-review` plugin launches **4 parallel agents**:
-1. **Agent 1+2**: CLAUDE.md compliance check (redundant for reliability)
-2. **Agent 3**: Bug detection focused on diff only
-3. **Agent 4**: Git blame/history context analysis
+### Code Review (`reusable-review.yml`)
+Single-pass review in ~1 minute. Analyzes the PR diff across **5 dimensions**:
 
-Each issue is scored 0-100 for confidence. Only issues ≥80 are posted as inline comments with suggested fixes.
+| Dimension | Checks |
+|-----------|--------|
+| **Bugs** | Syntax errors, type mismatches, null handling, missing imports |
+| **Security** | Injection, hardcoded secrets, input validation |
+| **Error Handling** | Bare except, swallowed errors, missing cleanup |
+| **Architecture** | CLAUDE.md violations, code duplication, breaking changes |
+| **Performance** | N+1 queries, unbounded loops, blocking I/O |
+
+Output: structured comment with severity levels (🔴 Critical / 🟡 Important / 🔵 Minor) and a verdict (✅ Approve / ⚠️ Suggestions / ❌ Request changes).
+
+### Docs Sync (`reusable-docs-sync.yml`)
+Runs after PR merge. Checks if merged changes require documentation updates:
+- **CLAUDE.md** — architecture, conventions, patterns
+- **README.md** — API endpoints, setup, configuration
+- **Docstrings** — new/changed public functions
+
+Only updates docs that are actually outdated. Commits changes and reports on the PR.
+
+### Mention Handler (`reusable-claude-mention.yml`)
+Responds to `@claude` in PR comments and issues. Can answer questions, suggest fixes, or implement changes.
+
+## Cost Control
+
+All workflows use z.ai API with configurable `max_turns`:
+- Review: 6 turns (default)
+- Docs sync: 8 turns (default)
+- Mention: 15 turns (default)
+
+Override in caller workflow:
+```yaml
+with:
+  max_turns: "10"
+```
