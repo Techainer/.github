@@ -1,0 +1,49 @@
+name: Reusable Claude Review
+
+on:
+  workflow_call:
+    inputs:
+      max_turns:
+        description: "Max conversation turns for cost control"
+        required: false
+        default: "15"
+        type: string
+    secrets:
+      ZAI_AUTH_TOKEN:
+        required: true
+
+jobs:
+  review:
+    if: >
+      github.actor != 'github-actions[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-review') &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          settings: |
+            {
+              "env": {
+                "ANTHROPIC_AUTH_TOKEN": "${{ secrets.ZAI_AUTH_TOKEN }}",
+                "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "GLM-4.7"
+              }
+            }
+          claude_args: |
+            --max-turns ${{ inputs.max_turns }}
+            --allowed-tools "Bash(gh:*),Read,Grep,Glob"
+          prompt: |
+            Run /code-review --comment on this PR.
