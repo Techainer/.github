@@ -36,12 +36,15 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          if [ -n "${GH_PAT:-}" ]; then
-            git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "https://github.com/"
-            git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "git@github.com:"
-          fi
           git submodule sync --recursive || true
-          git submodule update --init --recursive
+          if [ -n "${GH_PAT:-}" ]; then
+            AUTH=$(printf 'x-access-token:%s' "$GH_PAT" | base64 | tr -d '\n')
+            echo "::add-mask::$AUTH"
+            # extraheader (như actions/checkout) + tắt credential.helper của box; -c propagate xuống submodule clone
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c credential.helper= submodule update --init --recursive
+          else
+            git submodule update --init --recursive
+          fi
       - id: meta
         run: |
           BR="${GITHUB_REF_NAME//\//-}"
