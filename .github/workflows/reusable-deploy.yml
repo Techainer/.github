@@ -40,7 +40,7 @@ jobs:
           BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID:     ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
           APPROVERS:   ${{ vars[format('TELEGRAM_APPROVERS_{0}', inputs.environment)] }}
-          APPROVAL:    ${{ inputs.approval }}
+          APPROVAL:    ${{ (inputs.environment == 'production') && 'true' || 'false' }}   # gate CHỈ prod; staging auto
           TIMEOUT:     ${{ inputs.approval_timeout }}
           ENVIRONMENT: ${{ inputs.environment }}
           IMAGE:       ${{ inputs.image }}
@@ -74,12 +74,19 @@ jobs:
           ./kustomize edit set image "${CUR}=${{ inputs.image }}:${{ inputs.tag }}"
           rm -f kustomize
           echo "old=${OLD:-none}" >> "$GITHUB_OUTPUT"
-      - name: Commit + push tag
+      - name: Commit + push tag (rebase-retry cho ghi song song)
         run: |
           git config user.name  "techainer-ci"
           git config user.email "ci@techainer.com"
           git commit -am "deploy(${{ inputs.environment }}): ${{ inputs.image }}:${{ inputs.tag }}" || { echo "no change"; exit 0; }
-          git push origin "HEAD:${{ inputs.deploy_ref }}"
+          for i in 1 2 3 4 5 6; do
+            git push origin "HEAD:${{ inputs.deploy_ref }}" && { echo pushed; exit 0; }
+            echo "push bị từ chối (ghi song song), rebase & thử lại ($i)"
+            git fetch -q origin "${{ inputs.deploy_ref }}"
+            git rebase "origin/${{ inputs.deploy_ref }}" || git rebase --abort
+            sleep $(( (RANDOM % 6) + 2 ))
+          done
+          echo "::error::push thất bại sau 6 lần"; exit 1
       - name: Telegram — đã ghi tag (chờ ArgoCD sync)
         if: ${{ always() }}
         env:
