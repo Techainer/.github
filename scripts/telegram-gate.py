@@ -67,9 +67,9 @@ if not sent.get("ok"):
 mid=sent["result"]["message_id"]
 
 def finalize(msg):
-    callj("editMessageText", {"chat_id":CHAT,"message_id":mid,"text":msg,
-                              "parse_mode":"Markdown","disable_web_page_preview":True})
-    callj("editMessageReplyMarkup", {"chat_id":CHAT,"message_id":mid,"reply_markup":{"inline_keyboard":[]}})
+    # 1 call: đổi text + gỡ nút. (Tách editMessageReplyMarkup riêng sẽ 400 vì editMessageText đã gỡ nút.)
+    callj("editMessageText", {"chat_id":CHAT,"message_id":mid,"text":msg,"parse_mode":"Markdown",
+                              "disable_web_page_preview":True,"reply_markup":{"inline_keyboard":[]}})
 
 deadline=time.time()+TIMEOUT; decision=None
 while time.time()<deadline:
