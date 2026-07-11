@@ -18,7 +18,7 @@ APPROVERS={x.strip() for x in env("APPROVERS").replace(";",",").split(",") if x.
 try: TIMEOUT=max(60,int(float(env("TIMEOUT","1200"))))
 except: TIMEOUT=1200
 ENVN=env("ENVIRONMENT","?"); IMG=env("IMAGE"); TAG=env("TAG")
-RUN_URL=env("RUN_URL"); REVIEW=env("REVIEW_URL"); ACTOR=env("ACTOR")
+RUN_URL=env("RUN_URL"); REVIEW=env("REVIEW_URL"); TITLE=env("REVIEW_TITLE"); ACTOR=env("ACTOR")
 RUN=env("RUN_ID","0"); ATT=env("RUN_ATTEMPT","1")
 API="https://api.telegram.org/bot%s/"%BOT
 NONCE="%s.%s"%(RUN,ATT)   # buộc nút chỉ thuộc lần chạy NÀY
@@ -48,7 +48,8 @@ if wi.get("ok") and wi.get("result",{}).get("url"):
     print("::error::Bot đang set webhook (%s) -> không long-poll được. Fail-closed."%wi["result"]["url"]); sys.exit(1)
 
 lines=["⏳ *Chờ duyệt deploy* — `%s`"%ENVN, "Image: `%s:%s`"%(IMG,TAG), "Trigger: %s"%(ACTOR or "?")]
-if REVIEW: lines.append("Review: %s"%REVIEW)
+if TITLE: lines.append("📋 %s"%TITLE)
+if REVIEW: lines.append("🔗 %s"%REVIEW)
 if RUN_URL: lines.append("Run: %s"%RUN_URL)
 lines.append(("✅ Chỉ %d người trong allowlist bấm mới tính — hết hạn %d phút."%(len(APPROVERS),TIMEOUT//60))
              if APPROVERS else "⚠️ Chưa cấu hình approver — bấm để xem Telegram-ID của bạn.")
