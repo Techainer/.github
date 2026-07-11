@@ -1,34 +1,61 @@
-# Reusable deploy: notify Telegram (chờ duyệt) -> GitHub Environment gate -> ghi tag SẠCH vào deploy repo
-# (đọc name image hiện tại trong kustomization rồi `kustomize edit set image` -> tự migrate name env-baked -> sạch,
-#  không có cửa sổ ref trỏ ảnh chưa tồn tại vì build đã push trước) -> report Telegram. ArgoCD sync (MANUAL, prune:false).
+# Reusable deploy: Telegram inline Approve/Reject gate (allowlist theo Telegram-id, không cần GitHub acct,
+# không cần gói trả phí) -> ghi tag SẠCH vào deploy repo (tự migrate name env-baked) -> report. ArgoCD sync MANUAL.
 name: reusable-deploy
 on:
   workflow_call:
     inputs:
-      environment:    { required: true,  type: string }   # staging | production
-      deploy_repo:    { required: true,  type: string }   # Techainer/prj-ths-deployment
-      deploy_ref:     { required: false, type: string, default: 'master' }
-      image:          { required: true,  type: string }   # techainer1t/prj-ths-question-bank-frontend
-      tag:            { required: true,  type: string }
-      kustomize_path: { required: true,  type: string }   # staging/cloud/main/question-bank
+      environment:      { required: true,  type: string }
+      deploy_repo:      { required: true,  type: string }
+      deploy_ref:       { required: false, type: string, default: 'master' }
+      image:            { required: true,  type: string }
+      tag:              { required: true,  type: string }
+      kustomize_path:   { required: true,  type: string }
+      approval:         { required: false, type: string, default: 'true' }   # 'false' = bỏ gate (dev)
+      approval_timeout: { required: false, type: number, default: 1200 }
     secrets:
       DEPLOY_REPO_SSH_KEY: { required: true }
       TELEGRAM_BOT_TOKEN:  { required: false }
 jobs:
-  notify-pending:
+  gate:
     runs-on: ubuntu-latest
     steps:
-      - name: Telegram — chờ duyệt
+      - name: Resolve review link (PR nếu có, else commit)
+        id: link
         env:
-          T:    ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT: ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          SHA:      ${{ github.sha }}
+          SERVER:   ${{ github.server_url }}
         run: |
-          [ -z "$T" ] || [ -z "$CHAT" ] && exit 0
-          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          MSG="⏳ *${{ inputs.environment }}* chờ duyệt deploy%0A\`${{ inputs.image }}:${{ inputs.tag }}\`%0A→ $URL"
-          curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" -d parse_mode=Markdown >/dev/null || true
+          PR=""
+          if [ -n "$GH_TOKEN" ]; then
+            PR=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/commits/$SHA/pulls" \
+              | python3 -c "import sys,json;d=json.load(sys.stdin);print(d[0]['html_url'] if isinstance(d,list) and d else '')" 2>/dev/null || true)
+          fi
+          [ -z "$PR" ] && PR="$SERVER/$REPO/commit/$SHA"
+          echo "review_url=$PR" >> "$GITHUB_OUTPUT"
+      - name: Fetch gate script
+        uses: actions/checkout@v4
+        with: { repository: Techainer/.github, ref: main, path: _ci }
+      - name: Telegram Approve/Reject gate
+        env:
+          BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID:     ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
+          APPROVERS:   ${{ vars[format('TELEGRAM_APPROVERS_{0}', inputs.environment)] }}
+          APPROVAL:    ${{ inputs.approval }}
+          TIMEOUT:     ${{ inputs.approval_timeout }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE:       ${{ inputs.image }}
+          TAG:         ${{ inputs.tag }}
+          ACTOR:       ${{ github.actor }}
+          RUN_URL:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REVIEW_URL:  ${{ steps.link.outputs.review_url }}
+          RUN_ID:      ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python3 _ci/scripts/telegram-gate.py
   promote:
-    needs: notify-pending
+    needs: gate
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
@@ -63,5 +90,5 @@ jobs:
         run: |
           [ -z "$T" ] || [ -z "$CHAT" ] && exit 0
           URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          MSG="✅ *${{ inputs.environment }}* tag ghi xong%0A${{ inputs.image }}%0Atag \`${{ inputs.tag }}\` (cũ \`${{ steps.write.outputs.old }}\`)%0Aby @${{ github.actor }}%0A→ ArgoCD sync (manual)%0A$URL"
+          MSG="🚀 *${{ inputs.environment }}* tag ghi xong%0A${{ inputs.image }}:${{ inputs.tag }} (cũ \`${{ steps.write.outputs.old }}\`)%0A→ ArgoCD sync (manual)%0A$URL"
           curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" -d parse_mode=Markdown >/dev/null || true
