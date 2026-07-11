@@ -1,0 +1,51 @@
+# Reusable build: build + push image theo chuẩn DUY NHẤT techainer1t/<app>:<branch>-<sha7>
+# (env nằm ở branch/tag, KHÔNG nhét vào tên image). Hỗ trợ self-hosted runner + build-time .env
+# (frontend Next.js bake .env lúc build qua --secret id=env_file). Gọi bằng `uses:` + secrets: inherit.
+name: reusable-build
+on:
+  workflow_call:
+    inputs:
+      image:        { required: true,  type: string }   # techainer1t/prj-ths-question-bank-frontend (KHÔNG kèm tag)
+      runner:       { required: false, type: string, default: 'ubuntu-latest' }
+      dockerfile:   { required: false, type: string, default: 'Dockerfile' }
+      context:      { required: false, type: string, default: '.' }
+      env_file_src: { required: false, type: string, default: '' }   # path trên runner -> cp vào .env (self-hosted)
+      build_env:    { required: false, type: string, default: '' }   # --build-arg ENV=
+    secrets:
+      DOCKER_HUB_USERNAME: { required: false }
+      DOCKER_HUB_PASSWORD: { required: false }
+    outputs:
+      tag:   { value: ${{ jobs.build.outputs.tag }} }
+      image: { value: ${{ inputs.image }} }
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: |
+          BR="${GITHUB_REF_NAME//\//-}"
+          SHA="$(git rev-parse --short=7 HEAD)"
+          echo "tag=${BR}-${SHA}" >> "$GITHUB_OUTPUT"
+      - name: Prepare build-time .env (self-hosted disk)
+        if: ${{ inputs.env_file_src != '' }}
+        run: sudo cp "${{ inputs.env_file_src }}" .env
+      - name: Docker Hub login (best-effort; runner may already be logged in)
+        run: |
+          echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME || 'techainer1t' }}" --password-stdin \
+            || echo "login skipped/failed -> relying on ambient docker auth"
+      - name: Build & push
+        run: |
+          set -euo pipefail
+          ARGS=()
+          [ -n "${{ inputs.build_env }}" ] && ARGS+=(--build-arg "ENV=${{ inputs.build_env }}")
+          [ -f .env ] && ARGS+=(--secret "id=env_file,src=.env")
+          docker build "${ARGS[@]}" -t "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" -f "${{ inputs.dockerfile }}" "${{ inputs.context }}"
+          docker push "${{ inputs.image }}:${{ steps.meta.outputs.tag }}"
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f .env
+          docker rmi "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" || true

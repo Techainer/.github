@@ -1,0 +1,67 @@
+# Reusable deploy: notify Telegram (chờ duyệt) -> GitHub Environment gate -> ghi tag SẠCH vào deploy repo
+# (đọc name image hiện tại trong kustomization rồi `kustomize edit set image` -> tự migrate name env-baked -> sạch,
+#  không có cửa sổ ref trỏ ảnh chưa tồn tại vì build đã push trước) -> report Telegram. ArgoCD sync (MANUAL, prune:false).
+name: reusable-deploy
+on:
+  workflow_call:
+    inputs:
+      environment:    { required: true,  type: string }   # staging | production
+      deploy_repo:    { required: true,  type: string }   # Techainer/prj-ths-deployment
+      deploy_ref:     { required: false, type: string, default: 'master' }
+      image:          { required: true,  type: string }   # techainer1t/prj-ths-question-bank-frontend
+      tag:            { required: true,  type: string }
+      kustomize_path: { required: true,  type: string }   # staging/cloud/main/question-bank
+    secrets:
+      DEPLOY_REPO_SSH_KEY: { required: true }
+      TELEGRAM_BOT_TOKEN:  { required: false }
+jobs:
+  notify-pending:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Telegram — chờ duyệt
+        env:
+          T:    ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
+        run: |
+          [ -z "$T" ] || [ -z "$CHAT" ] && exit 0
+          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          MSG="⏳ *${{ inputs.environment }}* chờ duyệt deploy%0A\`${{ inputs.image }}:${{ inputs.tag }}\`%0A→ $URL"
+          curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" -d parse_mode=Markdown >/dev/null || true
+  promote:
+    needs: notify-pending
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.deploy_repo }}
+          ref: ${{ inputs.deploy_ref }}
+          ssh-key: ${{ secrets.DEPLOY_REPO_SSH_KEY }}
+          fetch-depth: 0
+      - name: Ghi tag vào overlay (name sạch, tự migrate)
+        id: write
+        run: |
+          set -euo pipefail
+          cd "${{ inputs.kustomize_path }}"
+          CUR="$(awk '/^images:/{f=1} f&&/name:/{sub(/.*name:[[:space:]]*/,"");gsub(/"/,"");print;exit}' kustomization.yaml)"
+          OLD="$(awk '/^images:/{f=1} f&&/newTag:/{sub(/.*newTag:[[:space:]]*/,"");gsub(/"/,"");print;exit}' kustomization.yaml)"
+          curl -sL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | tar xz
+          ./kustomize edit set image "${CUR}=${{ inputs.image }}:${{ inputs.tag }}"
+          rm -f kustomize
+          echo "old=${OLD:-none}" >> "$GITHUB_OUTPUT"
+      - name: Commit + push tag
+        run: |
+          git config user.name  "techainer-ci"
+          git config user.email "ci@techainer.com"
+          git commit -am "deploy(${{ inputs.environment }}): ${{ inputs.image }}:${{ inputs.tag }}" || { echo "no change"; exit 0; }
+          git push origin "HEAD:${{ inputs.deploy_ref }}"
+      - name: Telegram — đã ghi tag (chờ ArgoCD sync)
+        if: ${{ always() }}
+        env:
+          T:    ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
+        run: |
+          [ -z "$T" ] || [ -z "$CHAT" ] && exit 0
+          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          MSG="✅ *${{ inputs.environment }}* tag ghi xong%0A${{ inputs.image }}%0Atag \`${{ inputs.tag }}\` (cũ \`${{ steps.write.outputs.old }}\`)%0Aby @${{ github.actor }}%0A→ ArgoCD sync (manual)%0A$URL"
+          curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" -d parse_mode=Markdown >/dev/null || true
