@@ -11,9 +11,11 @@ on:
       context:      { required: false, type: string, default: '.' }
       env_file_src: { required: false, type: string, default: '' }   # path trên runner -> cp vào .env (self-hosted)
       build_env:    { required: false, type: string, default: '' }   # --build-arg ENV=
+      submodules:   { required: false, type: string, default: 'false' }  # 'recursive' để clone submodule (vd face-engine)
     secrets:
       DOCKER_HUB_USERNAME: { required: false }
       DOCKER_HUB_PASSWORD: { required: false }
+      GH_PAT:              { required: false }   # token đọc submodule private (khi submodules != false)
     outputs:
       tag:
         value: ${{ jobs.build.outputs.tag }}
@@ -26,6 +28,9 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: ${{ inputs.submodules }}
+          token: ${{ secrets.GH_PAT || github.token }}
       - id: meta
         run: |
           BR="${GITHUB_REF_NAME//\//-}"
