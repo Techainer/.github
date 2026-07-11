@@ -15,8 +15,10 @@ on:
       DOCKER_HUB_USERNAME: { required: false }
       DOCKER_HUB_PASSWORD: { required: false }
     outputs:
-      tag:   { value: ${{ jobs.build.outputs.tag }} }
-      image: { value: ${{ inputs.image }} }
+      tag:
+        value: ${{ jobs.build.outputs.tag }}
+      image:
+        value: ${{ inputs.image }}
 jobs:
   build:
     runs-on: ${{ inputs.runner }}
