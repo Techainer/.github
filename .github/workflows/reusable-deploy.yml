@@ -95,5 +95,5 @@ jobs:
         run: |
           [ -z "$T" ] || [ -z "$CHAT" ] && exit 0
           URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          MSG="🚀 *${{ inputs.environment }}* tag ghi xong%0A${{ inputs.image }}:${{ inputs.tag }} (cũ \`${{ steps.write.outputs.old }}\`)%0A→ ArgoCD sync (manual)%0A$URL"
+          MSG="$(printf '🚀 *%s* tag ghi xong\n%s:%s (cũ `%s`)\n→ ArgoCD sync (manual)\n%s' '${{ inputs.environment }}' '${{ inputs.image }}' '${{ inputs.tag }}' '${{ steps.write.outputs.old }}' "$URL")"
           curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" -d parse_mode=Markdown >/dev/null || true
