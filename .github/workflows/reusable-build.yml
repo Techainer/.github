@@ -68,6 +68,9 @@ jobs:
           ARGS=()
           [ -n "${{ inputs.build_env }}" ] && ARGS+=(--build-arg "ENV=${{ inputs.build_env }}")
           [ -f .env ] && ARGS+=(--secret "id=env_file,src=.env")
+          # cache-bust theo NỘI DUNG env: chống Docker tái dùng layer build của env khác (staging↔prod bleed).
+          # Dockerfile phải có `ARG ENV_HASH` trước RUN build thì mới ăn.
+          [ -f .env ] && ARGS+=(--build-arg "ENV_HASH=$(sha256sum .env | cut -d' ' -f1)")
           docker build "${ARGS[@]}" -t "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" -f "${{ inputs.dockerfile }}" "${{ inputs.context }}"
           docker push "${{ inputs.image }}:${{ steps.meta.outputs.tag }}"
       - name: Cleanup
