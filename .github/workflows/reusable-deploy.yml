@@ -40,7 +40,7 @@ jobs:
           BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID:     ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
           APPROVERS:   ${{ vars[format('TELEGRAM_APPROVERS_{0}', inputs.environment)] }}
-          APPROVAL:    ${{ (inputs.environment == 'production') && 'true' || 'false' }}   # gate CHỈ prod; staging auto
+          APPROVAL:    ${{ (inputs.environment == 'production' || inputs.environment == 'staging') && 'true' || 'false' }}   # gate CHO CẢ production + staging (production-staging); dev không dùng reusable-deploy
           TIMEOUT:     ${{ inputs.approval_timeout }}
           ENVIRONMENT: ${{ inputs.environment }}
           IMAGE:       ${{ inputs.image }}
@@ -88,12 +88,20 @@ jobs:
           done
           echo "::error::push thất bại sau 6 lần"; exit 1
       - name: Telegram — đã ghi tag (chờ ArgoCD sync)
-        if: ${{ always() }}
+        if: ${{ success() }}   # chỉ báo khi ghi+push tag THÀNH CÔNG (tránh "tag ghi xong" giả khi step lỗi)
         env:
-          T:    ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT: ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
+          T:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT:  ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
+          ENVN:  ${{ inputs.environment }}
+          IMAGE: ${{ inputs.image }}
+          TAG:   ${{ inputs.tag }}
+          OLD:   ${{ steps.write.outputs.old }}
         run: |
-          [ -z "$T" ] || [ -z "$CHAT" ] && exit 0
+          { [ -z "$T" ] || [ -z "$CHAT" ]; } && exit 0
+          # tên app dễ đọc (bỏ registry + prefix/suffix chuẩn) — chỉ để hiển thị
+          APP="$(printf '%s' "$IMAGE" | sed -E 's#^.*/##; s/-frontend$//; s/^prj-(ths|gkebook)-//; s/^prj-//')"
+          # env → nhãn tiếng người
+          case "$ENVN" in production) LBL='🔴 PRODUCTION';; staging) LBL='🟡 production-staging';; *) LBL="$ENVN";; esac
           URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          MSG="$(printf '🚀 *%s* tag ghi xong\n%s:%s (cũ `%s`)\n→ ArgoCD sync (manual)\n%s' '${{ inputs.environment }}' '${{ inputs.image }}' '${{ inputs.tag }}' '${{ steps.write.outputs.old }}' "$URL")"
+          MSG="$(printf '%s · *%s*\n🏷️ tag mới: `%s`\n    (cũ: `%s`)\n⏳ Đã ghi tag vào deploy repo — *CHƯA lên cụm*.\n👉 Cần ArgoCD *sync tay* để chạy.\n🔗 %s' "$LBL" "$APP" "$TAG" "${OLD:-none}" "$URL")"
           curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" -d parse_mode=Markdown >/dev/null || true
