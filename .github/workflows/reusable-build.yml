@@ -52,7 +52,12 @@ jobs:
           echo "tag=${BR}-${SHA}" >> "$GITHUB_OUTPUT"
       - name: Prepare build-time .env (self-hosted disk)
         if: ${{ inputs.env_file_src != '' }}
-        run: sudo -n cp "${{ inputs.env_file_src }}" .env 2>/dev/null || cp "${{ inputs.env_file_src }}" .env  # sudo (passwordless) hoặc cp thẳng (runner đọc được)
+        run: |
+          if sudo -n cp "${{ inputs.env_file_src }}" .env 2>/dev/null; then
+            sudo -n chown "$(id -u):$(id -g)" .env 2>/dev/null || true   # .env phải runner-owned, tránh root-owned làm hỏng checkout lần sau
+          else
+            cp "${{ inputs.env_file_src }}" .env
+          fi
       - name: Docker Hub login (best-effort; runner may already be logged in)
         run: |
           echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME || 'techainer1t' }}" --password-stdin \
@@ -68,5 +73,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          rm -f .env
+          sudo -n rm -f .env 2>/dev/null || rm -f .env
           docker rmi "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" || true
