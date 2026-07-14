@@ -16,44 +16,10 @@ on:
       DEPLOY_REPO_SSH_KEY: { required: true }
       TELEGRAM_BOT_TOKEN:  { required: false }
 jobs:
-  gate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Resolve review link (PR nếu có, else commit)
-        id: link
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO:     ${{ github.repository }}
-          SHA:      ${{ github.sha }}
-          SERVER:   ${{ github.server_url }}
-        run: |
-          RESP="$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/commits/$SHA/pulls" 2>/dev/null || echo '[]')"
-          URL="$(printf '%s' "$RESP" | python3 -c "import sys,json;d=json.load(sys.stdin);pr=d[0] if isinstance(d,list) and d else None;print(pr['html_url'] if pr else '')" 2>/dev/null || true)"
-          TITLE="$(printf '%s' "$RESP" | python3 -c "import sys,json;d=json.load(sys.stdin);pr=d[0] if isinstance(d,list) and d else None;print(('PR #%d: %s (by @%s)'%(pr['number'],pr['title'],pr['user']['login'])) if pr else '')" 2>/dev/null || true)"
-          [ -z "$URL" ] && URL="$SERVER/$REPO/commit/${SHA:0:7}"
-          { echo "review_url=$URL"; echo "review_title=$TITLE"; } >> "$GITHUB_OUTPUT"
-      - name: Fetch gate script
-        uses: actions/checkout@v4
-        with: { repository: Techainer/.github, ref: main, path: _ci }
-      - name: Telegram Approve/Reject gate
-        env:
-          BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID:     ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
-          APPROVERS:   ${{ vars[format('TELEGRAM_APPROVERS_{0}', inputs.environment)] }}
-          APPROVAL:    ${{ (inputs.environment == 'production' || inputs.environment == 'staging') && 'true' || 'false' }}   # gate CHO CẢ production + staging (production-staging); dev không dùng reusable-deploy
-          TIMEOUT:     ${{ inputs.approval_timeout }}
-          ENVIRONMENT: ${{ inputs.environment }}
-          IMAGE:       ${{ inputs.image }}
-          TAG:         ${{ inputs.tag }}
-          ACTOR:       ${{ github.actor }}
-          RUN_URL:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REVIEW_URL:  ${{ steps.link.outputs.review_url }}
-          REVIEW_TITLE: ${{ steps.link.outputs.review_title }}
-          RUN_ID:      ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: python3 _ci/scripts/telegram-gate.py
+  # GATE getUpdates ĐÃ BỎ (14/7 — WS4): THS Bot push-gate (cron deploy-watch) phát hiện commit đổi tag
+  # trên master rồi hỏi Approve/Reject và tự sync. Không còn long-poll getUpdates ở CI → HẾT 409.
+  # CI giờ chỉ ghi tag SẠCH vào master (CHƯA lên cụm — ArgoCD manual). Duyệt + sync do THS Bot lo.
   promote:
-    needs: gate
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
