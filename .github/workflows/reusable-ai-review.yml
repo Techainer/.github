@@ -131,7 +131,13 @@ jobs:
           prompt = (
             "Bạn là " + role + ". Review CHỈ các dòng THAY ĐỔI trong DIFF theo RULES. "
             "Trả về DUY NHẤT 1 JSON hợp lệ: {\"verdict\":\"PASS\"|\"FAIL\",\"summary\":\"1-2 câu tiếng Việt\",\"issues\":[\"file — vấn đề + gợi ý sửa\"]}. "
-            "FAIL khi có bug/security/rủi-ro RÕ RÀNG. Góp ý nhỏ vẫn PASS nhưng ghi vào issues.\n\n"
+            "NGUYÊN TẮC (best-practice code review): "
+            "(1) Ưu tiên theo mức độ: correctness + security TRƯỚC, rồi bug-logic/error-handling, rồi architecture. "
+            "(2) FAIL CHỈ khi có lỗi CHẮC CHẮN gây hỏng/nguy hiểm (bug rõ ràng, security thật, mất dữ liệu, breaking-change không migrate). "
+            "KHÔNG FAIL vì: style/format/naming/preference, thiếu test, hay nghi-ngờ mơ hồ — những thứ đó = PASS + ghi vào issues như góp ý. "
+            "(3) Với CI/config: chỉ flag lỗ hổng THẬT (secret hardcode bị lộ, script-injection `${{ }}` trong run, permissions quá rộng, pull_request_target checkout code PR) — "
+            "KHÔNG flag pattern chuẩn NỘI BỘ (reusable `Techainer/.github/...@main` là tin cậy; truyền secret cho workflow nội bộ là bình thường). "
+            "(4) issues phải CỤ THỂ: nêu file + vấn đề + cách sửa; đừng chung chung. Không có lỗi rõ → PASS.\n\n"
             "RULES: " + RULES + "\n\nDIFF:\n" + diff
           )
           if val_errors:
