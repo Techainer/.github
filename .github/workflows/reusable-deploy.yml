@@ -69,5 +69,7 @@ jobs:
           # env → nhãn tiếng người
           case "$ENVN" in production) LBL='🔴 PRODUCTION';; staging) LBL='🟡 production-staging';; *) LBL="$ENVN";; esac
           URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          MSG="$(printf '🔔 *CHỜ DUYỆT* · %s · *%s*\n🏷️ bản mới: `%s`  (cũ: `%s`)  ✅ CI review đã qua\n👉 Duyệt & lên cụm: trả lời bot  `deploy %s %s`  → bot hỏi xác nhận, Duyệt = sync NGAY + tự báo cáo (event+log) + nút Rollback.\n🔗 %s' "$LBL" "$APP" "$TAG" "${OLD:-none}" "$APP" "$TAG" "$URL")"
-          curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" -d parse_mode=Markdown >/dev/null || true
+          MSG="$(printf '🔔 *CHỜ DUYỆT* · %s · *%s*\n🏷️ bản mới: `%s`  (cũ: `%s`)  ✅ CI review đã qua\n👉 Duyệt & lên cụm: trả lời bot  `deploy %s %s`  → bot hiện nút [✅ Approve] [❌ Reject] → sync NGAY + tự báo cáo (event+log) + nút Rollback.' "$LBL" "$APP" "$TAG" "${OLD:-none}" "$APP" "$TAG")"
+          # Link gọn = nút URL bấm mở ngay
+          KB="$(printf '{"inline_keyboard":[[{"text":"🔎 CI run","url":"%s"},{"text":"📊 ArgoCD","url":"https://argocd.truonghocsoquocgia.vn/applications"}]]}' "$URL")"
+          curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" --data-urlencode "reply_markup=$KB" -d parse_mode=Markdown >/dev/null || true
