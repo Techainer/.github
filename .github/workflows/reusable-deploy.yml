@@ -53,7 +53,7 @@ jobs:
             sleep $(( (RANDOM % 6) + 2 ))
           done
           echo "::error::push thất bại sau 6 lần"; exit 1
-      - name: Telegram — đã ghi tag (chờ ArgoCD sync)
+      - name: Telegram — CHỜ DUYỆT (reply deploy để lên)
         if: ${{ success() }}   # chỉ báo khi ghi+push tag THÀNH CÔNG (tránh "tag ghi xong" giả khi step lỗi)
         env:
           T:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -69,5 +69,5 @@ jobs:
           # env → nhãn tiếng người
           case "$ENVN" in production) LBL='🔴 PRODUCTION';; staging) LBL='🟡 production-staging';; *) LBL="$ENVN";; esac
           URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          MSG="$(printf '%s · *%s*\n🏷️ tag mới: `%s`\n    (cũ: `%s`)\n⏳ Đã ghi tag vào deploy repo — *CHƯA lên cụm*.\n👉 Cần ArgoCD *sync tay* để chạy.\n🔗 %s' "$LBL" "$APP" "$TAG" "${OLD:-none}" "$URL")"
+          MSG="$(printf '🔔 *CHỜ DUYỆT* · %s · *%s*\n🏷️ bản mới: `%s`  (cũ: `%s`)  ✅ CI review đã qua\n👉 Duyệt & lên cụm: trả lời bot  `deploy %s %s`  → bot hỏi xác nhận, Duyệt = sync NGAY + tự báo cáo (event+log) + nút Rollback.\n🔗 %s' "$LBL" "$APP" "$TAG" "${OLD:-none}" "$APP" "$TAG" "$URL")"
           curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" -d parse_mode=Markdown >/dev/null || true

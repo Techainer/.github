@@ -1,0 +1,70 @@
+# AI review gate — review PR diff bằng getnexai (LLM của THS Bot / Hermes brain) theo rules THS.
+# FAIL → job fail → (bật branch protection require check) chặn merge. App repo gọi qua `uses:`.
+name: reusable-ai-review
+on:
+  workflow_call:
+    secrets:
+      NEXAI_API_KEY:
+        required: true
+jobs:
+  ai-review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: AI review (getnexai — Hermes review rules)
+        env:
+          NEXAI_API_KEY: ${{ secrets.NEXAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python3 - <<'PY'
+          import os, json, re, subprocess, urllib.request
+          pr = os.environ.get("PR")
+          diff = subprocess.run(["gh","pr","diff",pr], capture_output=True, text=True).stdout[:60000]
+          if not diff.strip():
+              print("Không có diff — skip."); raise SystemExit(0)
+          RULES = (
+            "BUG/LOGIC: syntax, type, null/None, off-by-one, race, thiếu import. "
+            "SECURITY: injection (SQL/XSS/command), secret/credential hardcode, thiếu validate input. "
+            "ERROR-HANDLING: bare except, nuốt lỗi, thiếu cleanup, sai propagate. "
+            "ARCHITECTURE: vi phạm CLAUDE.md/convention, trùng lặp nên tách, breaking-change không migrate. "
+            "AN TOÀN DEPLOY THS (k8s/config): KHÔNG replicas:0, KHÔNG thêm secret cleartext mới bị lộ, "
+            "KHÔNG giảm resource limit/request vô lý (gây OOM/thiếu), CHỈ đổi image TAG (không đổi image-name lạ), "
+            "migration DB phải an toàn (không phá/mất dữ liệu)."
+          )
+          prompt = (
+            "Bạn là senior code reviewer kiêm DevOps THS. Review CHỈ các dòng THAY ĐỔI trong DIFF theo RULES. "
+            "Trả về DUY NHẤT 1 JSON hợp lệ: {\"verdict\":\"PASS\"|\"FAIL\",\"summary\":\"1-2 câu tiếng Việt\",\"issues\":[\"file — vấn đề + gợi ý sửa\"]}. "
+            "FAIL khi có bug/security/nguy-hiểm-deploy RÕ RÀNG. Góp ý nhỏ vẫn PASS nhưng ghi vào issues.\n\n"
+            "RULES: " + RULES + "\n\nDIFF:\n" + diff
+          )
+          body = json.dumps({"model":"gpt-5.5","temperature":0,
+                             "messages":[{"role":"user","content":prompt}]}).encode()
+          req = urllib.request.Request("https://getnexai.net/api/v1/chat/completions", data=body,
+                headers={"Authorization":"Bearer "+os.environ["NEXAI_API_KEY"],"Content-Type":"application/json"})
+          try:
+              resp = json.load(urllib.request.urlopen(req, timeout=150))
+              content = resp["choices"][0]["message"]["content"]
+          except Exception as e:
+              print("getnexai lỗi (fail-open, không chặn CI):", e); raise SystemExit(0)
+          m = re.search(r'\{.*\}', content, re.S)
+          v = {}
+          try: v = json.loads(m.group(0)) if m else {}
+          except Exception: pass
+          verdict = str(v.get("verdict","FAIL")).upper()
+          issues  = v.get("issues") or []
+          summary = v.get("summary", content[:300])
+          head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — sửa trước khi merge"
+          comment = ("## 🤖 AI Review (getnexai) — " + head + "\n\n**" + summary + "**\n\n"
+                     + ("\n".join("- " + str(i) for i in issues) if issues else "_Không có vấn đề._"))
+          subprocess.run(["gh","pr","comment",pr,"--body",comment])
+          print(comment)
+          if verdict != "PASS":
+              raise SystemExit(1)
+          PY
