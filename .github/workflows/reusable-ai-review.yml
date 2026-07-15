@@ -33,6 +33,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Cài kustomize + kubeconform (validate config cứng — chỉ profile deploy)
+        if: ${{ inputs.profile == 'deploy' }}
+        run: |
+          curl -sL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | sudo tar xz -C /usr/local/bin kustomize
+          curl -sL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | sudo tar xz -C /usr/local/bin kubeconform
+          kustomize version && kubeconform -v
       - name: AI review
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -69,6 +75,30 @@ jobs:
           if not diff.strip():
               print("Không có diff — skip."); raise SystemExit(0)
 
+          # ---- VALIDATE CỨNG config toàn commit (profile deploy): kustomize build + kubeconform (schema k8s) ----
+          val_errors = []
+          if profile == "deploy":
+              if event == "pull_request":
+                  files = sh(["gh","pr","diff",os.environ.get("PR",""),"--name-only"]).split()
+              else:
+                  before = os.environ.get("BEFORE","") or ""; after = os.environ.get("AFTER","") or "HEAD"
+                  rng = "HEAD~1..HEAD" if (not before or set(before) <= {"0"}) else before+".."+after
+                  files = sh(["git","diff","--name-only",rng]).split()
+              dirs = sorted({os.path.dirname(f) for f in files if f.endswith((".yaml",".yml"))})
+              checked = []
+              for d in dirs:
+                  if not d: continue
+                  if os.path.exists(os.path.join(d,"kustomization.yaml")) or os.path.exists(os.path.join(d,"kustomization.yml")):
+                      checked.append(d)
+                      kb = subprocess.run(["kustomize","build",d], capture_output=True, text=True)
+                      if kb.returncode != 0:
+                          val_errors.append(d+" — kustomize build LỖI: "+kb.stderr.strip()[:300]); continue
+                      kc = subprocess.run(["kubeconform","-strict","-ignore-missing-schemas","-summary","-"],
+                                          input=kb.stdout, capture_output=True, text=True)
+                      if kc.returncode != 0:
+                          val_errors.append(d+" — kubeconform LỖI (schema k8s không hợp lệ): "+(kc.stdout+kc.stderr).strip()[:300])
+              print("Validate config dirs:", checked, "| errors:", len(val_errors))
+
           # ---- rules theo profile ----
           CODE_RULES = (
             "BUG/LOGIC: syntax, type, null/None, off-by-one, race, thiếu import, sai điều kiện. "
@@ -93,18 +123,24 @@ jobs:
             "FAIL khi có bug/security/rủi-ro RÕ RÀNG. Góp ý nhỏ vẫn PASS nhưng ghi vào issues.\n\n"
             "RULES: " + RULES + "\n\nDIFF:\n" + diff
           )
-          base = (os.environ.get("OPENAI_BASE_URL","") or "").rstrip("/")
-          if not base or not os.environ.get("OPENAI_API_KEY"):
-              print("Thiếu OPENAI_BASE_URL/OPENAI_API_KEY — skip (fail-open)."); raise SystemExit(0)
-          body = json.dumps({"model":os.environ.get("MODEL","gpt-5.5"),"temperature":0,
-                             "messages":[{"role":"user","content":prompt}]}).encode()
-          req = urllib.request.Request(base + "/chat/completions", data=body,
-                headers={"Authorization":"Bearer "+os.environ["OPENAI_API_KEY"],"Content-Type":"application/json"})
-          try:
-              resp = json.load(urllib.request.urlopen(req, timeout=150))
-              content = resp["choices"][0]["message"]["content"]
-          except Exception as e:
-              print("LLM lỗi (fail-open, không chặn CI):", e); raise SystemExit(0)
+          if val_errors:
+              # Validate CỨNG thắng: config không build/sai schema = FAIL, KHÔNG cần hỏi LLM (kể cả thiếu key)
+              content = json.dumps({"verdict":"FAIL",
+                  "summary":"Config KHÔNG build được / sai schema k8s — CHẶN deploy (validate cứng: kustomize build + kubeconform).",
+                  "issues":["🔧 "+e for e in val_errors]})
+          else:
+              base = (os.environ.get("OPENAI_BASE_URL","") or "").rstrip("/")
+              if not base or not os.environ.get("OPENAI_API_KEY"):
+                  print("Thiếu OPENAI_BASE_URL/OPENAI_API_KEY — skip (fail-open)."); raise SystemExit(0)
+              body = json.dumps({"model":os.environ.get("MODEL","gpt-5.5"),"temperature":0,
+                                 "messages":[{"role":"user","content":prompt}]}).encode()
+              req = urllib.request.Request(base + "/chat/completions", data=body,
+                    headers={"Authorization":"Bearer "+os.environ["OPENAI_API_KEY"],"Content-Type":"application/json"})
+              try:
+                  resp = json.load(urllib.request.urlopen(req, timeout=150))
+                  content = resp["choices"][0]["message"]["content"]
+              except Exception as e:
+                  print("LLM lỗi (fail-open, không chặn CI):", e); raise SystemExit(0)
 
           m = re.search(r'\{.*\}', content, re.S)
           v = {}
