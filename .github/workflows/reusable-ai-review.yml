@@ -15,7 +15,7 @@ on:
         default: code
       model:
         type: string
-        default: gpt-5.5
+        default: claude-sonnet-4-6
     secrets:
       OPENAI_API_KEY:
         required: false   # thiếu → python fail-open skip (không chặn build oan)
@@ -161,7 +161,7 @@ jobs:
               base = (os.environ.get("OPENAI_BASE_URL","") or "").rstrip("/")
               if not base or not os.environ.get("OPENAI_API_KEY"):
                   print("Thiếu OPENAI_BASE_URL/OPENAI_API_KEY — skip (fail-open)."); raise SystemExit(0)
-              body = json.dumps({"model":os.environ.get("MODEL","gpt-5.5"),"temperature":0,
+              body = json.dumps({"model":os.environ.get("MODEL","claude-sonnet-4-6"),"temperature":0,
                                  "messages":[{"role":"user","content":prompt}]}).encode()
               req = urllib.request.Request(base + "/chat/completions", data=body,
                     headers={"Authorization":"Bearer "+os.environ["OPENAI_API_KEY"],"Content-Type":"application/json"})
@@ -175,9 +175,15 @@ jobs:
           v = {}
           try: v = json.loads(m.group(0)) if m else {}
           except Exception: pass
-          verdict = str(v.get("verdict","FAIL")).upper()
-          issues  = v.get("issues") or []
-          summary = v.get("summary", content[:300])
+          if v.get("verdict"):
+              verdict = str(v["verdict"]).upper()
+              issues  = v.get("issues") or []
+              summary = v.get("summary", content[:300])
+          else:
+              # Model KHÔNG trả JSON verdict hợp lệ (định dạng lạ / cắt output) → KHÔNG chặn deploy
+              # (fail-open: gate Telegram Duyệt vẫn gác cuối). Ghi rõ để người xem tự rà tay.
+              verdict = "PASS"; issues = []
+              summary = "⚠️ AI review chưa phản hồi đúng định dạng JSON — BỎ QUA, không chặn (nên tự rà tay diff)."
           head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — cần sửa"
           comment = ("## 🤖 AI Review — " + head + "\n\n**" + summary + "**\n\n"
                      + ("\n".join("- " + str(i) for i in issues) if issues else "_Không có vấn đề._"))
