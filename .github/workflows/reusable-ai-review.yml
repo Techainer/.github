@@ -135,7 +135,7 @@ jobs:
             "(1) Ưu tiên theo mức độ: correctness + security TRƯỚC, rồi bug-logic/error-handling, rồi architecture. "
             "(2) FAIL CHỈ khi có lỗi CHẮC CHẮN gây hỏng/nguy hiểm (bug rõ ràng, security thật, mất dữ liệu, breaking-change không migrate). "
             "KHÔNG FAIL vì: style/format/naming/preference, thiếu test, hay nghi-ngờ mơ hồ — những thứ đó = PASS + ghi vào issues như góp ý. "
-            "(3) Với CI/config: chỉ flag lỗ hổng THẬT (secret hardcode bị lộ, script-injection `${{ }}` trong run, permissions quá rộng, pull_request_target checkout code PR) — "
+            "(3) Với CI/config: chỉ flag lỗ hổng THẬT (secret hardcode bị lộ, script-injection biểu thức GHA nhúng trong run, permissions quá rộng, pull_request_target checkout code PR) — "
             "KHÔNG flag pattern chuẩn NỘI BỘ (reusable `Techainer/.github/...@main` là tin cậy; truyền secret cho workflow nội bộ là bình thường). "
             "(4) issues phải CỤ THỂ: nêu file + vấn đề + cách sửa; đừng chung chung. Không có lỗi rõ → PASS.\n\n"
             "RULES: " + RULES + "\n\nDIFF:\n" + diff
