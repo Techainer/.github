@@ -63,6 +63,7 @@ jobs:
           TAG:   ${{ inputs.tag }}
           OLD:   ${{ steps.write.outputs.old }}
           KPATH: ${{ inputs.kustomize_path }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           { [ -z "$T" ] || [ -z "$CHAT" ]; } && exit 0
           # tên app dễ đọc (bỏ registry + prefix/suffix chuẩn) — chỉ để hiển thị
@@ -78,11 +79,18 @@ jobs:
             staging/local/main/*) ARGOAPP="onprem-staging-$(basename "$KPATH")" ;;
             k8s/main/*)           ARGOAPP="onprem-prod-$(basename "$KPATH")" ;;
           esac
-          MSG="$(printf '🔔 *CHỜ DUYỆT* · %s · *%s*\n🏷️ bản mới: `%s`  (cũ: `%s`)  ✅ CI review đã qua\n👉 Duyệt NGAY trong Telegram: bấm nút bên dưới → sync + tự báo cáo (event+log).' "$LBL" "$APP" "$TAG" "${OLD:-none}")"
+          # Chi tiết ĐỂ DUYỆT CÓ CƠ SỞ: commit đổi gì + files + tóm tắt AI review (lấy từ app repo, github.sha).
+          CMSG="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.commit.message' 2>/dev/null | head -1)"
+          [ -z "$CMSG" ] && CMSG="(commit $GITHUB_SHA)"
+          FILES="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.files[].filename' 2>/dev/null | grep -vE '^\.github/' | head -8 | sed 's/^/• /')"
+          [ -z "$FILES" ] && FILES="(không lấy được danh sách file)"
+          REVIEW="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --jq 'map(select(.body|contains("AI Review")))|last.body // ""' 2>/dev/null | sed -e 's/^#\{1,\} *//' -e 's/\*\*//g' -e 's/`//g' | sed -n '1,12p')"
+          [ -z "$REVIEW" ] && REVIEW="(chưa có nội dung review — xem CI run)"
+          MSG="$(printf '🔔 CHỜ DUYỆT · %s · %s\n🏷️ %s → %s\n📝 %s\n\n📄 Files đổi:\n%s\n\n━━━ 🤖 AI REVIEW ━━━\n%s\n\n👉 Bấm nút bên dưới để Duyệt (sync) hoặc Từ chối.' "$LBL" "$APP" "${OLD:-none}" "$TAG" "$CMSG" "$FILES" "$REVIEW")"
           # Nút callback IN-PLACE: tick app + Sync/Từ chối (gate xử). Có ARGOAPP thì hiện; không thì chỉ link.
           if [ -n "$ARGOAPP" ]; then
             KB="$(printf '{"inline_keyboard":[[{"text":"☑ %s","callback_data":"dg:t:0"}],[{"text":"✅ Sync đã chọn","callback_data":"dg:go"},{"text":"❌ Từ chối","callback_data":"dg:no"}],[{"text":"🔎 CI run","url":"%s"},{"text":"📊 ArgoCD","url":"https://argocd.truonghocsoquocgia.vn/applications"}]]}' "$ARGOAPP" "$URL")"
           else
             KB="$(printf '{"inline_keyboard":[[{"text":"🔎 CI run","url":"%s"},{"text":"📊 ArgoCD","url":"https://argocd.truonghocsoquocgia.vn/applications"}]]}' "$URL")"
           fi
-          curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" --data-urlencode "reply_markup=$KB" -d parse_mode=Markdown >/dev/null || true
+          curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" --data-urlencode "reply_markup=$KB" --data-urlencode "disable_web_page_preview=true" >/dev/null || true
