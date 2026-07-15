@@ -1,5 +1,8 @@
-# AI review gate — review PR diff bằng getnexai (LLM của THS Bot / Hermes brain) theo rules THS.
-# FAIL → job fail → (bật branch protection require check) chặn merge. App repo gọi qua `uses:`.
+# AI review gate — review diff bằng getnexai (LLM của THS Bot / Hermes brain) theo rules THS.
+# CHẠY cả PR lẫn PUSH:
+#   - pull_request  → diff cả PR, comment lên PR, FAIL = chặn merge (nếu bật branch protection).
+#   - push          → diff các commit vừa push, comment lên commit, FAIL = commit đỏ (cờ cảnh báo).
+# App repo gọi qua `uses:` với `on: [pull_request, push]`.
 name: reusable-ai-review
 on:
   workflow_call:
@@ -8,11 +11,12 @@ on:
         required: true
 jobs:
   ai-review:
-    if: github.event.pull_request.draft == false
+    # bỏ qua PR draft; push thì luôn chạy
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: write
+      contents: write        # push: comment lên commit
+      pull-requests: write    # PR: comment lên PR
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,14 +25,37 @@ jobs:
         env:
           NEXAI_API_KEY: ${{ secrets.NEXAI_API_KEY }}
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
         run: |
           python3 - <<'PY'
           import os, json, re, subprocess, urllib.request
-          pr = os.environ.get("PR")
-          diff = subprocess.run(["gh","pr","diff",pr], capture_output=True, text=True).stdout[:60000]
+          event  = os.environ.get("EVENT","")
+          repo   = os.environ.get("REPO","")
+
+          def sh(cmd):
+              return subprocess.run(cmd, capture_output=True, text=True).stdout
+
+          # ---- lấy diff theo loại sự kiện ----
+          if event == "pull_request":
+              pr = os.environ.get("PR")
+              diff = sh(["gh","pr","diff",pr])
+          else:  # push
+              before = os.environ.get("BEFORE","") or ""
+              after  = os.environ.get("AFTER","") or "HEAD"
+              if (not before) or set(before) <= {"0"}:
+                  # nhánh mới / commit đầu — review commit cuối
+                  diff = sh(["git","diff","HEAD~1..HEAD"]) or sh(["git","show","--format=","HEAD"])
+              else:
+                  diff = sh(["git","diff",before+".."+after])
+          diff = diff[:60000]
+
           if not diff.strip():
               print("Không có diff — skip."); raise SystemExit(0)
+
           RULES = (
             "BUG/LOGIC: syntax, type, null/None, off-by-one, race, thiếu import. "
             "SECURITY: injection (SQL/XSS/command), secret/credential hardcode, thiếu validate input. "
@@ -53,6 +80,7 @@ jobs:
               content = resp["choices"][0]["message"]["content"]
           except Exception as e:
               print("getnexai lỗi (fail-open, không chặn CI):", e); raise SystemExit(0)
+
           m = re.search(r'\{.*\}', content, re.S)
           v = {}
           try: v = json.loads(m.group(0)) if m else {}
@@ -60,11 +88,22 @@ jobs:
           verdict = str(v.get("verdict","FAIL")).upper()
           issues  = v.get("issues") or []
           summary = v.get("summary", content[:300])
-          head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — sửa trước khi merge"
+          head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — cần sửa"
           comment = ("## 🤖 AI Review (getnexai) — " + head + "\n\n**" + summary + "**\n\n"
                      + ("\n".join("- " + str(i) for i in issues) if issues else "_Không có vấn đề._"))
-          subprocess.run(["gh","pr","comment",pr,"--body",comment])
           print(comment)
+
+          # ---- đăng comment theo loại sự kiện (fail-open) ----
+          try:
+              if event == "pull_request":
+                  subprocess.run(["gh","pr","comment",os.environ["PR"],"--body",comment])
+              else:
+                  subprocess.run(["gh","api","-X","POST",
+                                  "repos/%s/commits/%s/comments" % (repo, os.environ.get("AFTER","")),
+                                  "-f","body="+comment])
+          except Exception as e:
+              print("đăng comment lỗi (bỏ qua):", e)
+
           if verdict != "PASS":
               raise SystemExit(1)
           PY
