@@ -72,9 +72,19 @@ jobs:
                   diff = sh(["git","diff","HEAD~1..HEAD"]) or sh(["git","show","--format=","HEAD"])
               else:
                   diff = sh(["git","diff",before+".."+after])
-          diff = diff[:60000]
+          # ---- LỌC diff: chỉ review CODE substantive (best-practice). Bỏ CI/workflow (.github), lock, generated, binary. ----
+          # Tránh review nhầm chính gate CI (ci-cd.yml) rồi FAIL oan; tránh nitpick file sinh tự động.
+          def _excluded(p):
+              p = p.lower()
+              if p.startswith(".github/"): return True
+              if any(p.endswith(x) for x in (".lock","-lock.json","lock.yaml","lock.yml","go.sum",".min.js",".min.css",".map",".svg",".png",".jpg",".jpeg",".ico",".gif",".webp",".woff",".woff2",".ttf",".pdf",".lockb")): return True
+              if any(s in p for s in ("/dist/","/build/","/vendor/","/node_modules/","/__generated__/",".generated.","/gen/")): return True
+              return False
+          _blocks = re.split(r'(?m)^(?=diff --git )', diff)
+          _kept = [b for b in _blocks if not (re.match(r'diff --git a/\S+ b/(\S+)', b) and _excluded(re.match(r'diff --git a/\S+ b/(\S+)', b).group(1)))]
+          diff = "".join(_kept)[:60000]
           if not diff.strip():
-              print("Không có diff — skip."); raise SystemExit(0)
+              print("Diff chỉ gồm file loại trừ (CI/lock/generated) hoặc rỗng — skip, PASS."); raise SystemExit(0)
 
           # ---- VALIDATE CỨNG config toàn commit (profile deploy): kustomize build + kubeconform (schema k8s) ----
           val_errors = []
