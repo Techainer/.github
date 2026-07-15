@@ -1,14 +1,21 @@
-# AI review gate — review diff bằng getnexai (LLM của THS Bot / Hermes brain) theo rules THS.
+# AI code review gate — chấm diff bằng LLM (OpenAI-compatible) theo rules THS.
 # CHẠY cả PR lẫn PUSH:
 #   - pull_request  → diff cả PR, comment lên PR, FAIL = chặn merge (nếu bật branch protection).
 #   - push          → diff các commit vừa push, comment lên commit, FAIL = commit đỏ (cờ cảnh báo).
-# App repo gọi qua `uses:` với `on: [pull_request, push]`.
+# profile:
+#   - code   (mặc định) → review CODE (bug/security/error-handling/architecture).
+#   - deploy            → review CONFIG/K8S an toàn deploy (dùng cho repo deployment).
+# Secret lấy qua `secrets: inherit` từ repo gọi: OPENAI_API_KEY, OPENAI_BASE_URL.
 name: reusable-ai-review
 on:
   workflow_call:
-    secrets:
-      NEXAI_API_KEY:
-        required: true
+    inputs:
+      profile:
+        type: string
+        default: code
+      model:
+        type: string
+        default: gpt-5.5
 jobs:
   ai-review:
     # bỏ qua PR draft; push thì luôn chạy
@@ -21,9 +28,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: AI review (getnexai — Hermes review rules)
+      - name: AI review
         env:
-          NEXAI_API_KEY: ${{ secrets.NEXAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          MODEL: ${{ inputs.model }}
+          PROFILE: ${{ inputs.profile }}
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
@@ -33,53 +43,63 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, json, re, subprocess, urllib.request
-          event  = os.environ.get("EVENT","")
-          repo   = os.environ.get("REPO","")
+          event   = os.environ.get("EVENT","")
+          repo    = os.environ.get("REPO","")
+          profile = os.environ.get("PROFILE","code")
 
           def sh(cmd):
               return subprocess.run(cmd, capture_output=True, text=True).stdout
 
           # ---- lấy diff theo loại sự kiện ----
           if event == "pull_request":
-              pr = os.environ.get("PR")
-              diff = sh(["gh","pr","diff",pr])
+              diff = sh(["gh","pr","diff",os.environ.get("PR","")])
           else:  # push
               before = os.environ.get("BEFORE","") or ""
               after  = os.environ.get("AFTER","") or "HEAD"
               if (not before) or set(before) <= {"0"}:
-                  # nhánh mới / commit đầu — review commit cuối
                   diff = sh(["git","diff","HEAD~1..HEAD"]) or sh(["git","show","--format=","HEAD"])
               else:
                   diff = sh(["git","diff",before+".."+after])
           diff = diff[:60000]
-
           if not diff.strip():
               print("Không có diff — skip."); raise SystemExit(0)
 
-          RULES = (
-            "BUG/LOGIC: syntax, type, null/None, off-by-one, race, thiếu import. "
-            "SECURITY: injection (SQL/XSS/command), secret/credential hardcode, thiếu validate input. "
-            "ERROR-HANDLING: bare except, nuốt lỗi, thiếu cleanup, sai propagate. "
-            "ARCHITECTURE: vi phạm CLAUDE.md/convention, trùng lặp nên tách, breaking-change không migrate. "
-            "AN TOÀN DEPLOY THS (k8s/config): KHÔNG replicas:0, KHÔNG thêm secret cleartext mới bị lộ, "
-            "KHÔNG giảm resource limit/request vô lý (gây OOM/thiếu), CHỈ đổi image TAG (không đổi image-name lạ), "
-            "migration DB phải an toàn (không phá/mất dữ liệu)."
+          # ---- rules theo profile ----
+          CODE_RULES = (
+            "BUG/LOGIC: syntax, type, null/None, off-by-one, race, thiếu import, sai điều kiện. "
+            "SECURITY: injection (SQL/XSS/command), secret/credential hardcode, thiếu validate input, path traversal. "
+            "ERROR-HANDLING: bare except, nuốt lỗi, thiếu cleanup/rollback, sai propagate, resource leak. "
+            "ARCHITECTURE: vi phạm convention/CLAUDE.md, trùng lặp nên tách, breaking-change API không migrate."
           )
+          DEPLOY_RULES = (
+            "AN TOÀN DEPLOY (manifest k8s / config): KHÔNG hạ replicas về 0 ngoài ý muốn, "
+            "KHÔNG thêm secret/credential cleartext mới, KHÔNG giảm resource limit/request vô lý (gây OOM/thiếu), "
+            "thay đổi image NÊN chỉ là đổi TAG (đổi image-name/registry lạ phải nghi ngờ), "
+            "sửa ConfigMap/env phải khớp app (không xoá key app đang dùng), "
+            "migration/job DB phải an toàn (không phá/mất dữ liệu). Diff YAML phải hợp lệ."
+          )
+          RULES = DEPLOY_RULES if profile == "deploy" else CODE_RULES
+          role  = ("senior DevOps review manifest triển khai" if profile == "deploy"
+                   else "senior code reviewer")
+
           prompt = (
-            "Bạn là senior code reviewer kiêm DevOps THS. Review CHỈ các dòng THAY ĐỔI trong DIFF theo RULES. "
+            "Bạn là " + role + ". Review CHỈ các dòng THAY ĐỔI trong DIFF theo RULES. "
             "Trả về DUY NHẤT 1 JSON hợp lệ: {\"verdict\":\"PASS\"|\"FAIL\",\"summary\":\"1-2 câu tiếng Việt\",\"issues\":[\"file — vấn đề + gợi ý sửa\"]}. "
-            "FAIL khi có bug/security/nguy-hiểm-deploy RÕ RÀNG. Góp ý nhỏ vẫn PASS nhưng ghi vào issues.\n\n"
+            "FAIL khi có bug/security/rủi-ro RÕ RÀNG. Góp ý nhỏ vẫn PASS nhưng ghi vào issues.\n\n"
             "RULES: " + RULES + "\n\nDIFF:\n" + diff
           )
-          body = json.dumps({"model":"gpt-5.5","temperature":0,
+          base = (os.environ.get("OPENAI_BASE_URL","") or "").rstrip("/")
+          if not base or not os.environ.get("OPENAI_API_KEY"):
+              print("Thiếu OPENAI_BASE_URL/OPENAI_API_KEY — skip (fail-open)."); raise SystemExit(0)
+          body = json.dumps({"model":os.environ.get("MODEL","gpt-5.5"),"temperature":0,
                              "messages":[{"role":"user","content":prompt}]}).encode()
-          req = urllib.request.Request("https://getnexai.net/api/v1/chat/completions", data=body,
-                headers={"Authorization":"Bearer "+os.environ["NEXAI_API_KEY"],"Content-Type":"application/json"})
+          req = urllib.request.Request(base + "/chat/completions", data=body,
+                headers={"Authorization":"Bearer "+os.environ["OPENAI_API_KEY"],"Content-Type":"application/json"})
           try:
               resp = json.load(urllib.request.urlopen(req, timeout=150))
               content = resp["choices"][0]["message"]["content"]
           except Exception as e:
-              print("getnexai lỗi (fail-open, không chặn CI):", e); raise SystemExit(0)
+              print("LLM lỗi (fail-open, không chặn CI):", e); raise SystemExit(0)
 
           m = re.search(r'\{.*\}', content, re.S)
           v = {}
@@ -89,7 +109,7 @@ jobs:
           issues  = v.get("issues") or []
           summary = v.get("summary", content[:300])
           head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — cần sửa"
-          comment = ("## 🤖 AI Review (getnexai) — " + head + "\n\n**" + summary + "**\n\n"
+          comment = ("## 🤖 AI Review — " + head + "\n\n**" + summary + "**\n\n"
                      + ("\n".join("- " + str(i) for i in issues) if issues else "_Không có vấn đề._"))
           print(comment)
 
