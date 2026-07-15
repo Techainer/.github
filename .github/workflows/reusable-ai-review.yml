@@ -169,18 +169,24 @@ jobs:
           head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — cần sửa"
           comment = ("## 🤖 AI Review — " + head + "\n\n**" + summary + "**\n\n"
                      + ("\n".join("- " + str(i) for i in issues) if issues else "_Không có vấn đề._"))
-          print(comment)
 
-          # ---- đăng comment theo loại sự kiện (fail-open) ----
+          # Hiển thị ĐẸP: ghi vào Job Summary (Actions UI render markdown), KHÔNG dump JSON vào log.
+          gs = os.environ.get("GITHUB_STEP_SUMMARY")
+          if gs:
+              try: open(gs, "a", encoding="utf-8").write(comment + "\n")
+              except Exception: pass
+          print("Verdict:", verdict, "| issues:", len(issues))   # log gọn 1 dòng, không dump cả comment/JSON
+
+          # ---- đăng comment theo loại sự kiện (fail-open, NUỐT output JSON) ----
           try:
               if event == "pull_request":
-                  subprocess.run(["gh","pr","comment",os.environ["PR"],"--body",comment])
+                  subprocess.run(["gh","pr","comment",os.environ["PR"],"--body",comment], capture_output=True)
               else:
                   subprocess.run(["gh","api","-X","POST",
                                   "repos/%s/commits/%s/comments" % (repo, os.environ.get("AFTER","")),
-                                  "-f","body="+comment])
+                                  "-f","body="+comment, "--silent"], capture_output=True)
           except Exception as e:
-              print("đăng comment lỗi (bỏ qua):", e)
+              print("đăng comment lỗi (bỏ qua):", str(e)[:120])
 
           if verdict != "PASS":
               raise SystemExit(1)
