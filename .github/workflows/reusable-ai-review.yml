@@ -23,8 +23,9 @@ on:
         required: false
 jobs:
   ai-review:
-    # bỏ qua PR draft; push thì luôn chạy
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    # chạy mọi event (push, workflow_dispatch, …) TRỪ PR draft.
+    # (Trước đây chỉ 'push' → workflow_dispatch bị skip → build needs:review cũng skip → GÃY staging deploy.)
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: write        # push: comment lên commit
