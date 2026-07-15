@@ -1,0 +1,47 @@
+# reusable-lint — lint NON-BLOCKING (chỉ báo cáo Job Summary, KHÔNG chặn deploy). Chạy self-hosted (private registry).
+# Tự nhận stack: node (npm run lint + tsc), go (gofmt+go vet), python (ruff). App repo gọi 1 dòng `uses:`.
+name: reusable-lint
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+jobs:
+  lint:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint (non-blocking, report-only)
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          S="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+          echo "## 🧹 Lint (non-blocking — CHỈ báo cáo, KHÔNG chặn deploy)" >> "$S"
+          if [ -f package.json ]; then
+            echo "### Node / TypeScript" >> "$S"
+            if npm ci --prefer-offline --no-audit --no-fund >/tmp/npmci.log 2>&1; then
+              if grep -q '"lint"' package.json; then
+                echo "<details><summary><b>npm run lint</b></summary>" >> "$S"; echo '```' >> "$S"
+                npm run lint 2>&1 | tail -100 >> "$S"; echo '```' >> "$S"; echo "</details>" >> "$S"
+              else echo "- (không có script lint trong package.json)" >> "$S"; fi
+              if [ -f tsconfig.json ]; then
+                echo "<details><summary><b>tsc --noEmit</b></summary>" >> "$S"; echo '```' >> "$S"
+                npx --no-install tsc --noEmit 2>&1 | tail -80 >> "$S"; echo '```' >> "$S"; echo "</details>" >> "$S"
+              fi
+            else
+              echo "- npm ci lỗi (registry/deps) — bỏ qua lint node. 5 dòng cuối:" >> "$S"
+              echo '```' >> "$S"; tail -5 /tmp/npmci.log >> "$S"; echo '```' >> "$S"
+            fi
+          elif [ -f go.mod ]; then
+            echo "### Go" >> "$S"; echo '```' >> "$S"
+            echo "# gofmt -l (file chưa format):" >> "$S"; gofmt -l . 2>&1 | head -30 >> "$S"
+            echo "# go vet:" >> "$S"; go vet ./... 2>&1 | tail -80 >> "$S"; echo '```' >> "$S"
+          elif ls -1 *.py >/dev/null 2>&1 || [ -f pyproject.toml ] || [ -f requirements.txt ]; then
+            echo "### Python (ruff)" >> "$S"; echo '```' >> "$S"
+            pipx run ruff check . 2>&1 | tail -80 >> "$S"; echo '```' >> "$S"
+          else
+            echo "- (không nhận diện stack — bỏ qua lint)" >> "$S"
+          fi
+          exit 0   # LUÔN pass — non-blocking
