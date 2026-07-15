@@ -86,6 +86,18 @@ jobs:
           if not diff.strip():
               print("Diff chỉ gồm file loại trừ (CI/lock/generated) hoặc rỗng — skip, PASS."); raise SystemExit(0)
 
+          # ---- NỘI DUNG FILE đổi (full context → review SÂU, không chỉ hunks) ----
+          _changed = [m.group(1) for b in _kept for m in [re.match(r'diff --git a/\S+ b/(\S+)', b)] if m]
+          _SRC = (".py",".js",".jsx",".ts",".tsx",".go",".java",".rb",".php",".vue",".yaml",".yml",".sh",".sql",".rs",".c",".cpp",".h",".cs",".kt")
+          _fc = []; _tot = 0
+          for _p in _changed[:20]:
+              if not _p.lower().endswith(_SRC): continue
+              try: _c = open(_p, encoding="utf-8", errors="ignore").read()[:15000]
+              except Exception: continue
+              if _tot + len(_c) > 50000: break
+              _tot += len(_c); _fc.append("=== FILE: " + _p + " ===\n" + _c)
+          files_blob = "\n\n".join(_fc)
+
           # ---- VALIDATE CỨNG config toàn commit (profile deploy): kustomize build + kubeconform (schema k8s) ----
           val_errors = []
           if profile == "deploy":
@@ -129,7 +141,7 @@ jobs:
                    else "senior code reviewer")
 
           prompt = (
-            "Bạn là " + role + ". Review CHỈ các dòng THAY ĐỔI trong DIFF theo RULES. "
+            "Bạn là " + role + ". Review thay đổi (DIFF) theo RULES; ĐỌC KỸ NỘI DUNG FILE kèm dưới để hiểu ngữ cảnh + TRUY VẾT tác động (data flow, null, edge case, side-effect, tương tác giữa các hàm) — KHÔNG chỉ nhìn dòng đổi bề mặt. "
             "Trả về DUY NHẤT 1 JSON hợp lệ: {\"verdict\":\"PASS\"|\"FAIL\",\"summary\":\"1-2 câu tiếng Việt\",\"issues\":[\"file — vấn đề + gợi ý sửa\"]}. "
             "NGUYÊN TẮC (best-practice code review): "
             "(1) Ưu tiên theo mức độ: correctness + security TRƯỚC, rồi bug-logic/error-handling, rồi architecture. "
@@ -138,7 +150,7 @@ jobs:
             "(3) Với CI/config: chỉ flag lỗ hổng THẬT (secret hardcode bị lộ, script-injection biểu thức GHA nhúng trong run, permissions quá rộng, pull_request_target checkout code PR) — "
             "KHÔNG flag pattern chuẩn NỘI BỘ (reusable `Techainer/.github/...@main` là tin cậy; truyền secret cho workflow nội bộ là bình thường). "
             "(4) issues phải CỤ THỂ: nêu file + vấn đề + cách sửa; đừng chung chung. Không có lỗi rõ → PASS.\n\n"
-            "RULES: " + RULES + "\n\nDIFF:\n" + diff
+            "RULES: " + RULES + "\n\nDIFF:\n" + diff + (("\n\nNỘI DUNG FILE (đọc để review sâu):\n" + files_blob) if files_blob else "")
           )
           if val_errors:
               # Validate CỨNG thắng: config không build/sai schema = FAIL, KHÔNG cần hỏi LLM (kể cả thiếu key)
