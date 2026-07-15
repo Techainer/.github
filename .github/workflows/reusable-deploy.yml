@@ -62,6 +62,7 @@ jobs:
           IMAGE: ${{ inputs.image }}
           TAG:   ${{ inputs.tag }}
           OLD:   ${{ steps.write.outputs.old }}
+          KPATH: ${{ inputs.kustomize_path }}
         run: |
           { [ -z "$T" ] || [ -z "$CHAT" ]; } && exit 0
           # tên app dễ đọc (bỏ registry + prefix/suffix chuẩn) — chỉ để hiển thị
@@ -69,7 +70,19 @@ jobs:
           # env → nhãn tiếng người
           case "$ENVN" in production) LBL='🔴 PRODUCTION';; staging) LBL='🟡 production-staging';; *) LBL="$ENVN";; esac
           URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          MSG="$(printf '🔔 *CHỜ DUYỆT* · %s · *%s*\n🏷️ bản mới: `%s`  (cũ: `%s`)  ✅ CI review đã qua\n👉 Duyệt & lên cụm: trả lời bot  `deploy %s %s`  → bot hiện nút [✅ Approve] [❌ Reject] → sync NGAY + tự báo cáo (event+log) + nút Rollback.' "$LBL" "$APP" "$TAG" "${OLD:-none}" "$APP" "$TAG")"
-          # Link gọn = nút URL bấm mở ngay
-          KB="$(printf '{"inline_keyboard":[[{"text":"🔎 CI run","url":"%s"},{"text":"📊 ArgoCD","url":"https://argocd.truonghocsoquocgia.vn/applications"}]]}' "$URL")"
+          # map kustomize_path -> tên app ArgoCD (cho nút callback IN-PLACE). basename = thư mục app cuối path.
+          ARGOAPP=""
+          case "$KPATH" in
+            cloud/k8s/main/*)     ARGOAPP="aks-prod-$(basename "$KPATH")" ;;
+            staging/cloud/main/*) ARGOAPP="aks-staging-$(basename "$KPATH")" ;;
+            staging/local/main/*) ARGOAPP="onprem-staging-$(basename "$KPATH")" ;;
+            k8s/main/*)           ARGOAPP="onprem-prod-$(basename "$KPATH")" ;;
+          esac
+          MSG="$(printf '🔔 *CHỜ DUYỆT* · %s · *%s*\n🏷️ bản mới: `%s`  (cũ: `%s`)  ✅ CI review đã qua\n👉 Duyệt NGAY trong Telegram: bấm nút bên dưới → sync + tự báo cáo (event+log).' "$LBL" "$APP" "$TAG" "${OLD:-none}")"
+          # Nút callback IN-PLACE: tick app + Sync/Từ chối (gate xử). Có ARGOAPP thì hiện; không thì chỉ link.
+          if [ -n "$ARGOAPP" ]; then
+            KB="$(printf '{"inline_keyboard":[[{"text":"☑ %s","callback_data":"dg:t:0"}],[{"text":"✅ Sync đã chọn","callback_data":"dg:go"},{"text":"❌ Từ chối","callback_data":"dg:no"}],[{"text":"🔎 CI run","url":"%s"},{"text":"📊 ArgoCD","url":"https://argocd.truonghocsoquocgia.vn/applications"}]]}' "$ARGOAPP" "$URL")"
+          else
+            KB="$(printf '{"inline_keyboard":[[{"text":"🔎 CI run","url":"%s"},{"text":"📊 ArgoCD","url":"https://argocd.truonghocsoquocgia.vn/applications"}]]}' "$URL")"
+          fi
           curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" --data-urlencode "reply_markup=$KB" -d parse_mode=Markdown >/dev/null || true
