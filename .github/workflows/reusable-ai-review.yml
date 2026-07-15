@@ -5,7 +5,7 @@
 # profile:
 #   - code   (mặc định) → review CODE (bug/security/error-handling/architecture).
 #   - deploy            → review CONFIG/K8S an toàn deploy (dùng cho repo deployment).
-# Secret lấy qua `secrets: inherit` từ repo gọi: OPENAI_API_KEY, OPENAI_BASE_URL.
+# Caller truyền tường minh 2 secret (least-privilege): OPENAI_API_KEY, OPENAI_BASE_URL.
 name: reusable-ai-review
 on:
   workflow_call:
@@ -16,6 +16,11 @@ on:
       model:
         type: string
         default: gpt-5.5
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+      OPENAI_BASE_URL:
+        required: true
 jobs:
   ai-review:
     # bỏ qua PR draft; push thì luôn chạy
