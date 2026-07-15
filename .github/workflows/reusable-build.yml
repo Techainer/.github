@@ -27,6 +27,8 @@ jobs:
   # GATE: AI review CODE trước — FAIL (bug/security rõ) → job này fail → build bị SKIP → không deploy.
   # Secret OPENAI_* chảy vào qua `secrets: inherit` ở deploy.yml. Thiếu key → reusable-ai-review fail-open (không chặn).
   review:
+    # CHỈ gate code MỚI (push). workflow_dispatch = redeploy code đã review lúc push → KHÔNG re-review (tránh chặn oan bởi commit cũ).
+    if: github.event_name == 'push'
     uses: Techainer/.github/.github/workflows/reusable-ai-review.yml@main
     with:
       profile: code
@@ -34,7 +36,9 @@ jobs:
       OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
   build:
-    needs: review      # ⬅ chỉ build khi AI review PASS
+    needs: review
+    # Build khi review PASS (push) HOẶC review được skip (dispatch = redeploy). FAIL review → build KHÔNG chạy.
+    if: ${{ !cancelled() && (needs.review.result == 'success' || needs.review.result == 'skipped') }}
     runs-on: ${{ inputs.runner }}
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
