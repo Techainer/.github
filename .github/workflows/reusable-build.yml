@@ -16,13 +16,25 @@ on:
       DOCKER_HUB_USERNAME: { required: false }
       DOCKER_HUB_PASSWORD: { required: false }
       GH_PAT:              { required: false }   # token đọc submodule private (khi submodules != false)
+      OPENAI_API_KEY:      { required: false }   # gate AI-review trước build (rỗng = fail-open, vẫn build)
+      OPENAI_BASE_URL:     { required: false }
     outputs:
       tag:
         value: ${{ jobs.build.outputs.tag }}
       image:
         value: ${{ inputs.image }}
 jobs:
+  # GATE: AI review CODE trước — FAIL (bug/security rõ) → job này fail → build bị SKIP → không deploy.
+  # Secret OPENAI_* chảy vào qua `secrets: inherit` ở deploy.yml. Thiếu key → reusable-ai-review fail-open (không chặn).
+  review:
+    uses: Techainer/.github/.github/workflows/reusable-ai-review.yml@main
+    with:
+      profile: code
+    secrets:
+      OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
   build:
+    needs: review      # ⬅ chỉ build khi AI review PASS
     runs-on: ${{ inputs.runner }}
     outputs:
       tag: ${{ steps.meta.outputs.tag }}

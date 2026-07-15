@@ -18,9 +18,9 @@ on:
         default: gpt-5.5
     secrets:
       OPENAI_API_KEY:
-        required: true
+        required: false   # thiếu → python fail-open skip (không chặn build oan)
       OPENAI_BASE_URL:
-        required: true
+        required: false
 jobs:
   ai-review:
     # bỏ qua PR draft; push thì luôn chạy
