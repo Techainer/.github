@@ -57,7 +57,12 @@ jobs:
         if: ${{ success() }}   # chỉ báo khi ghi+push tag THÀNH CÔNG (tránh "tag ghi xong" giả khi step lỗi)
         env:
           T:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT:  ${{ vars[format('TELEGRAM_CHAT_ID_{0}', inputs.environment)] }}
+          # CHAT tra theo môi trường bằng REF TĨNH ĐÚNG HOA — KHÔNG dùng vars[format(...lowercase)]:
+          # dynamic bracket-lookup key thường CASE-SENSITIVE, key 'TELEGRAM_CHAT_ID_production' KHÔNG khớp var HOA
+          # 'TELEGRAM_CHAT_ID_PRODUCTION' → CHAT rỗng → NUỐT card MỌI deploy staging/prod. Chọn theo ENVN trong bash.
+          CHAT_PRODUCTION: ${{ vars.TELEGRAM_CHAT_ID_PRODUCTION }}
+          CHAT_STAGING:    ${{ vars.TELEGRAM_CHAT_ID_STAGING }}
+          CHAT_FALLBACK:   ${{ vars.TELEGRAM_CHAT_ID }}
           ENVN:  ${{ inputs.environment }}
           IMAGE: ${{ inputs.image }}
           TAG:   ${{ inputs.tag }}
@@ -65,7 +70,10 @@ jobs:
           KPATH: ${{ inputs.kustomize_path }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          { [ -z "$T" ] || [ -z "$CHAT" ]; } && exit 0
+          case "$ENVN" in production) CHAT="$CHAT_PRODUCTION";; staging) CHAT="$CHAT_STAGING";; *) CHAT="";; esac
+          [ -z "$CHAT" ] && CHAT="$CHAT_FALLBACK"
+          echo "notify-check: T=$([ -n "$T" ] && echo set || echo EMPTY) CHAT=$([ -n "$CHAT" ] && echo set || echo EMPTY) env=$ENVN"
+          { [ -z "$T" ] || [ -z "$CHAT" ]; } && { echo "thiếu T/CHAT → KHÔNG gửi card (kiểm secret TELEGRAM_BOT_TOKEN + var TELEGRAM_CHAT_ID_<ENV>)"; exit 0; }
           # tên app dễ đọc (bỏ registry + prefix/suffix chuẩn) — chỉ để hiển thị
           APP="$(printf '%s' "$IMAGE" | sed -E 's#^.*/##; s/-frontend$//; s/^prj-(ths|gkebook)-//; s/^prj-//')"
           # env → nhãn tiếng người
