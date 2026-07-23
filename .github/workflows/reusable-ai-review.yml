@@ -147,6 +147,7 @@ jobs:
             "(1) Ưu tiên theo mức độ: correctness + security TRƯỚC, rồi bug-logic/error-handling, rồi architecture. "
             "(2) FAIL CHỈ khi có lỗi CHẮC CHẮN gây hỏng/nguy hiểm (bug rõ ràng, security thật, mất dữ liệu, breaking-change không migrate). "
             "KHÔNG FAIL vì: style/format/naming/preference, thiếu test, hay nghi-ngờ mơ hồ — những thứ đó = PASS + ghi vào issues như góp ý. "
+            "TUYỆT ĐỐI KHÔNG phán lỗi COMPILE/SYNTAX/BUILD-FAIL: pipeline đã `build` (biên dịch) TRƯỚC bước này, nên nếu code đã tồn tại trong commit thì nó CHẮC CHẮN compile được — bạn nghĩ 'không compile/sai cú pháp' thì gần như chắc BẠN nhầm cú pháp ngôn ngữ (vd Go composite-literal elision `map[string][]string{k:{v}}` HỢP LỆ = `[]string{v}`; Go generics; Python f-string; TS satisfies). Gặp nghi-ngờ cú pháp → BỎ QUA, coi như PASS, KHÔNG đưa vào issues. "
             "(3) Với CI/config: chỉ flag lỗ hổng THẬT (secret hardcode bị lộ, script-injection biểu thức GHA nhúng trong run, permissions quá rộng, pull_request_target checkout code PR) — "
             "KHÔNG flag pattern chuẩn NỘI BỘ (reusable `Techainer/.github/...@main` là tin cậy; truyền secret cho workflow nội bộ là bình thường). "
             "(4) issues phải CỤ THỂ: nêu file + vấn đề + cách sửa; đừng chung chung. Không có lỗi rõ → PASS.\n\n"
@@ -185,15 +186,34 @@ jobs:
               verdict = "PASS"; issues = []
               summary = "⚠️ AI review chưa phản hồi đúng định dạng JSON — BỎ QUA, không chặn (nên tự rà tay diff)."
           head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — cần sửa"
-          comment = ("## 🤖 AI Review — " + head + "\n\n**" + summary + "**\n\n"
-                     + ("\n".join("- " + str(i) for i in issues) if issues else "_Không có vấn đề._"))
+          _ref = ("PR #" + os.environ.get("PR","")) if event == "pull_request" else ("commit `" + os.environ.get("AFTER","")[:7] + "`")
+          _issues_md = "\n".join(str(n) + ". " + str(i) for n, i in enumerate(issues, 1))
+          comment = ("## 🤖 AI Review — " + head + "\n\n"
+                     + "> " + summary + "\n\n"
+                     + (("### 🔎 Vấn đề (" + str(len(issues)) + ")\n" + _issues_md) if issues else "_Không có vấn đề._")
+                     + "\n\n<sub>" + role + " · model `" + os.environ.get("MODEL","") + "` · " + _ref + " · profile `" + profile + "`</sub>")
 
-          # Hiển thị ĐẸP: ghi vào Job Summary (Actions UI render markdown), KHÔNG dump JSON vào log.
+          # (a) Job Summary — Actions UI render markdown ĐẸP (tab "Summary" của run).
           gs = os.environ.get("GITHUB_STEP_SUMMARY")
           if gs:
               try: open(gs, "a", encoding="utf-8").write(comment + "\n")
               except Exception: pass
-          print("Verdict:", verdict, "| issues:", len(issues))   # log gọn 1 dòng, không dump cả comment/JSON
+          # (b) IN ĐẦY ĐỦ ra LOG (stdout) — dev thấy NGAY tại step, khỏi mò Summary/commit-comment.
+          _bar = "─" * 66
+          print("\n" + _bar)
+          print("🤖 AI REVIEW — " + head + "   [" + _ref.replace("`","") + " · profile " + profile + "]")
+          print(_bar)
+          print(summary)
+          if issues:
+              print("\n🔎 Vấn đề (" + str(len(issues)) + "):")
+              for _n, _i in enumerate(issues, 1):
+                  print("  " + str(_n) + ". " + str(_i))
+          else:
+              print("\n✅ Không có vấn đề.")
+          print(_bar)
+          if verdict != "PASS":
+              print("→ Chi tiết render đẹp ở tab 'Summary' của run này, và comment trên " + _ref.replace("`",""))
+          print("Verdict:", verdict, "| issues:", len(issues))
 
           # ---- đăng comment theo loại sự kiện (fail-open, NUỐT output JSON) ----
           try:
