@@ -185,6 +185,27 @@ jobs:
               # (fail-open: gate Telegram Duyệt vẫn gác cuối). Ghi rõ để người xem tự rà tay.
               verdict = "PASS"; issues = []
               summary = "⚠️ AI review chưa phản hồi đúng định dạng JSON — BỎ QUA, không chặn (nên tự rà tay diff)."
+
+          # ---- BACKSTOP CỨNG chống false-positive compile/syntax (không dựa vào LLM tự tuân prompt) ----
+          # Lý do: bước `build` của pipeline mới là nguồn sự thật về biên dịch; nếu code THẬT lỗi compile
+          # thì workflow build FAIL và chặn deploy độc lập. Reviewer LLM hay nhầm cú pháp (vd Go elision
+          # map[K][]T{k:{v}} hợp lệ) → tuyệt đối không để nó FAIL vì lý do compile/syntax.
+          # KHÔNG áp cho val_errors (kustomize/kubeconform) vì đó là lỗi build config THẬT, deterministic.
+          if not val_errors and issues:
+              _cpat = re.compile(r"(kh[oô]ng\s+(?:compile|build|bi[êe]n\s*d[ịi]ch)|compile[\s-]*error|"
+                                 r"syntax[\s-]*error|sai\s*c[uú]\s*ph[áa]p|l[oô]i\s*c[uú]\s*ph[áa]p|"
+                                 r"build[\s-]*fail|(?:won'?t|cannot|does\s*not|will\s*not)\s*compile|"
+                                 r"kh[oô]ng\s*bi[êe]n\s*d[ịi]ch\s*[đd][ưuơợ]?[ơợ]c)", re.I)
+              _drop = [i for i in issues if _cpat.search(str(i))]
+              if _drop:
+                  issues = [i for i in issues if i not in _drop]
+                  for _d in _drop:
+                      print("⏭️  DROP claim compile/syntax (build đã lo, reviewer không tính):", str(_d)[:180])
+                  if verdict == "FAIL" and not issues:
+                      verdict = "PASS"
+                      summary = ("Đã loại " + str(len(_drop)) + " cảnh báo compile/syntax (build lo biên dịch) "
+                                 "→ không còn lỗi chặn. " + summary)
+
           head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — cần sửa"
           _ref = ("PR #" + os.environ.get("PR","")) if event == "pull_request" else ("commit `" + os.environ.get("AFTER","")[:7] + "`")
           _issues_md = "\n".join(str(n) + ". " + str(i) for n, i in enumerate(issues, 1))
