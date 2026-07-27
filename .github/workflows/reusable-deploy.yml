@@ -13,7 +13,8 @@ on:
       approval:         { required: false, type: string, default: 'true' }   # 'false' = bỏ gate (dev)
       approval_timeout: { required: false, type: number, default: 1200 }
     secrets:
-      DEPLOY_REPO_SSH_KEY: { required: true }
+      DEPLOY_REPO_TOKEN:   { required: true }    # PAT (HTTPS) — self-hosted sau proxy chặn SSH:22 nên ssh-key vô hiệu
+      DEPLOY_REPO_SSH_KEY: { required: false }   # legacy (ubuntu-latest), giữ để không vỡ caller cũ
       TELEGRAM_BOT_TOKEN:  { required: false }
 jobs:
   # GATE getUpdates ĐÃ BỎ (14/7 — WS4): THS Bot push-gate (cron deploy-watch) phát hiện commit đổi tag
@@ -27,7 +28,7 @@ jobs:
         with:
           repository: ${{ inputs.deploy_repo }}
           ref: ${{ inputs.deploy_ref }}
-          ssh-key: ${{ secrets.DEPLOY_REPO_SSH_KEY }}
+          token: ${{ secrets.DEPLOY_REPO_TOKEN }}   # HTTPS+PAT: chạy được trên self-hosted (box chặn SSH:22)
           fetch-depth: 0
       - name: Ghi tag vào overlay (name sạch, tự migrate)
         id: write
