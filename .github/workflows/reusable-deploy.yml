@@ -20,7 +20,7 @@ jobs:
   # trên master rồi hỏi Approve/Reject và tự sync. Không còn long-poll getUpdates ở CI → HẾT 409.
   # CI giờ chỉ ghi tag SẠCH vào master (CHƯA lên cụm — ArgoCD manual). Duyệt + sync do THS Bot lo.
   promote:
-    runs-on: ubuntu-latest
+    runs-on: techainer-gkebooks-1
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
