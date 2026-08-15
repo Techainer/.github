@@ -12,6 +12,9 @@ on:
       kustomize_path:   { required: true,  type: string }
       approval:         { required: false, type: string, default: 'true' }   # 'false' = bỏ gate (dev)
       approval_timeout: { required: false, type: number, default: 1200 }
+      # promote chỉ checkout deploy repo + kustomize edit + git push + 1 curl Telegram — KHÔNG đụng
+      # docker daemon nên không cần ghim đúng box build. Xem note runs-on bên dưới.
+      runner:           { required: false, type: string, default: 'self-hosted' }
     secrets:
       DEPLOY_REPO_TOKEN:   { required: true }    # PAT (HTTPS) — self-hosted sau proxy chặn SSH:22 nên ssh-key vô hiệu
       DEPLOY_REPO_SSH_KEY: { required: false }   # legacy (ubuntu-latest), giữ để không vỡ caller cũ
@@ -21,7 +24,9 @@ jobs:
   # trên master rồi hỏi Approve/Reject và tự sync. Không còn long-poll getUpdates ở CI → HẾT 409.
   # CI giờ chỉ ghi tag SẠCH vào master (CHƯA lên cụm — ArgoCD manual). Duyệt + sync do THS Bot lo.
   promote:
-    runs-on: techainer-gkebooks-1
+    # 'self-hosted' = label tự động mọi runner self-hosted đều có → hiện vẫn về techainer-gkebooks-1,
+    # nhưng thêm runner nhẹ vào pool thì promote tự chảy sang runner rảnh thay vì chờ build 40 phút.
+    runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4

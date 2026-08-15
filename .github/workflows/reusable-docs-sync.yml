@@ -8,6 +8,14 @@ on:
         required: false
         default: "8"
         type: string
+      # Job Claude thuần API (không đụng docker daemon) → không cần ghim đúng box build.
+      # 'self-hosted' là label tự động mọi runner self-hosted đều có: hôm nay vẫn về
+      # techainer-gkebooks-1, thêm runner nhẹ vào pool thì tự chảy sang runner rảnh.
+      runner:
+        description: "Runner label"
+        required: false
+        default: self-hosted
+        type: string
     secrets:
       ZAI_AUTH_TOKEN:
         required: true
@@ -15,7 +23,7 @@ on:
 jobs:
   doc-sync:
     if: ${{ github.event.pull_request.merged == true }}
-    runs-on: techainer-gkebooks-1
+    runs-on: ${{ inputs.runner }}
     permissions:
       contents: write
       pull-requests: write
