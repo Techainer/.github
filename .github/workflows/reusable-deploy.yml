@@ -107,4 +107,15 @@ jobs:
           else
             KB="$(printf '{"inline_keyboard":[[{"text":"🔎 CI run","url":"%s"},{"text":"📊 ArgoCD","url":"https://argocd.truonghocsoquocgia.vn/applications"}]]}' "$URL")"
           fi
-          curl -s "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" --data-urlencode "reply_markup=$KB" --data-urlencode "disable_web_page_preview=true" >/dev/null || true
+          # KHÔNG `|| true`: tới đây tag ĐÃ push. Nuốt lỗi = tag lên master mà KHÔNG ai nhận card duyệt —
+          # đúng kiểu im lặng đã dính 27/07. Từ khi runs-on thành input, job có thể rơi vào runner chưa được
+          # squid cho phép ra api.telegram.org, nên phải kêu to. Retry 3 lần rồi mới đỏ.
+          SENT=0
+          for i in 1 2 3; do
+            CODE="$(curl -sS --max-time 20 -o "$RUNNER_TEMP/tg.json" -w '%{http_code}' "https://api.telegram.org/bot$T/sendMessage" --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" --data-urlencode "reply_markup=$KB" --data-urlencode "disable_web_page_preview=true" || echo 000)"
+            [ "$CODE" = "200" ] && { SENT=1; break; }
+            echo "gửi Telegram lỗi (HTTP $CODE, lần $i): $(head -c 300 "$RUNNER_TEMP/tg.json" 2>/dev/null)"
+            sleep 3
+          done
+          [ "$SENT" = "1" ] || { echo "::error::Tag ĐÃ push nhưng KHÔNG gửi được card CHỜ DUYỆT (runner ra được api.telegram.org không?) — phải duyệt tay"; exit 1; }
+          echo "đã gửi card CHỜ DUYỆT"
