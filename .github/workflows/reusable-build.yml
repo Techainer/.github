@@ -58,18 +58,22 @@ jobs:
           # cái bẫy lúc thêm runner chứ không phải phí mỗi build. CI không cần history submodule.
           # --depth 1 đo E2E cả 2 submodule smart-class: 8s / 58MB.
           # Fallback blobless (~2m14s) cho trường hợp SHA ghim không nằm ở đỉnh branch nên shallow fetch từ chối.
-          SM_FAST="--init --recursive --jobs 4 --depth 1"
-          SM_SLOW="--init --recursive --jobs 4 --filter=blob:none"
+          GITC=(git)
           if [ -n "${GH_PAT:-}" ]; then
             AUTH=$(printf 'x-access-token:%s' "$GH_PAT" | base64 | tr -d '\n')
             echo "::add-mask::$AUTH"
             # extraheader (như actions/checkout) + tắt credential.helper của box; -c propagate xuống submodule clone
-            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c credential.helper= submodule update $SM_FAST \
-              || { echo "::warning::shallow submodule thất bại -> fallback blobless"; \
-                   git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c credential.helper= submodule update $SM_SLOW; }
-          else
-            git submodule update $SM_FAST \
-              || { echo "::warning::shallow submodule thất bại -> fallback blobless"; git submodule update $SM_SLOW; }
+            GITC=(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" -c credential.helper=)
+          fi
+          if ! "${GITC[@]}" submodule update --init --recursive --jobs 4 --depth 1; then
+            # PHẢI reset trước khi fallback: lần shallow fail để lại .git/modules/<sm> DỞ DANG → git coi đó là
+            # repo đã có nên chỉ `fetch` chứ không clone lại, mà --filter CHỈ áp lúc CLONE → retry fail y hệt.
+            # Tệ hơn: module hỏng nằm lại trong _work ẤM, build sau kế thừa và fail lặp tới khi có người vào
+            # box xoá tay. Xoá sạch .git/modules là cách duy nhất để fallback thật sự là fallback.
+            echo "::warning::shallow submodule thất bại -> reset .git/modules rồi fallback blobless"
+            git submodule deinit -f --all || true
+            rm -rf .git/modules
+            "${GITC[@]}" submodule update --init --recursive --jobs 4 --filter=blob:none
           fi
       - id: meta
         run: |
