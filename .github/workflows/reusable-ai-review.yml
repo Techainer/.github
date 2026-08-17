@@ -16,6 +16,13 @@ on:
       model:
         type: string
         default: claude-sonnet-4-6
+      # Job này chỉ gọi HTTP + chạy python (~31s), KHÔNG đụng docker daemon → không cần ghim đúng
+      # box build. Ghim 'techainer-gkebooks-1' làm nó xếp hàng sau build 40 phút của repo khác.
+      # 'self-hosted' là label tự động mọi runner self-hosted đều có → hôm nay vẫn về đúng box đó,
+      # nhưng khi thêm runner nhẹ vào pool thì tự chảy sang runner rảnh. Ghim lại bằng input nếu cần.
+      runner:
+        type: string
+        default: self-hosted
     secrets:
       OPENAI_API_KEY:
         required: false   # thiếu → python fail-open skip (không chặn build oan)
@@ -26,7 +33,7 @@ jobs:
     # chạy mọi event (push, workflow_dispatch, …) TRỪ PR draft.
     # (Trước đây chỉ 'push' → workflow_dispatch bị skip → build needs:review cũng skip → GÃY staging deploy.)
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: techainer-gkebooks-1
+    runs-on: ${{ inputs.runner }}
     permissions:
       contents: write        # push: comment lên commit
       pull-requests: write    # PR: comment lên PR
@@ -34,12 +41,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # runs-on giờ là input → job có thể rơi vào BẤT KỲ runner nào trong pool. 2 step dưới gỡ nốt các
+      # phụ thuộc ngầm vào riêng box build (sudo không mật khẩu, python3 cài sẵn) để "chảy sang runner rảnh"
+      # không biến thành "fail trên runner mới".
+      - name: Đảm bảo có python3 (runner trần chưa chắc có)
+        id: py
+        run: command -v python3 >/dev/null || echo "need=1" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        if: steps.py.outputs.need == '1'
+        with:
+          python-version: "3.12"
       - name: Cài kustomize + kubeconform (validate config cứng — chỉ profile deploy)
         if: ${{ inputs.profile == 'deploy' }}
         run: |
-          curl -sL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | sudo tar xz -C /usr/local/bin kustomize
-          curl -sL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | sudo tar xz -C /usr/local/bin kubeconform
-          kustomize version && kubeconform -v
+          set -euo pipefail
+          # Cài vào RUNNER_TEMP + GITHUB_PATH thay vì `sudo tar -C /usr/local/bin`: sudo-không-mật-khẩu
+          # KHÔNG phải thứ mọi self-hosted runner đều có, mà chỉ để chạy 2 binary dùng-một-lần.
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | tar xz -C "$RUNNER_TEMP/bin" kustomize
+          curl -sL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz -C "$RUNNER_TEMP/bin" kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/kustomize" version && "$RUNNER_TEMP/bin/kubeconform" -v
       - name: AI review
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -60,11 +82,20 @@ jobs:
           profile = os.environ.get("PROFILE","code")
 
           def sh(cmd):
-              return subprocess.run(cmd, capture_output=True, text=True).stdout
+              # gh CLI có sẵn trên runner GitHub-hosted nhưng KHÔNG trên self-hosted trần. Job này chạy
+              # runs-on: inputs.runner nên có thể rơi vào runner bất kỳ → thiếu gh phải fallback git,
+              # KHÔNG được để FileNotFoundError làm chết gate (chết = chặn build oan mọi repo).
+              try:
+                  return subprocess.run(cmd, capture_output=True, text=True).stdout
+              except FileNotFoundError:
+                  print("⚠️  runner thiếu binary '" + cmd[0] + "' -> fallback")
+                  return ""
 
           # ---- lấy diff theo loại sự kiện ----
           if event == "pull_request":
-              diff = sh(["gh","pr","diff",os.environ.get("PR","")])
+              # checkout@v4 ở event pull_request lấy MERGE COMMIT (parent1 = base) → `HEAD^1 HEAD`
+              # chính là diff của PR, dùng khi runner không có gh.
+              diff = sh(["gh","pr","diff",os.environ.get("PR","")]) or sh(["git","diff","HEAD^1","HEAD"])
           else:  # push
               before = os.environ.get("BEFORE","") or ""
               after  = os.environ.get("AFTER","") or "HEAD"
@@ -102,7 +133,8 @@ jobs:
           val_errors = []
           if profile == "deploy":
               if event == "pull_request":
-                  files = sh(["gh","pr","diff",os.environ.get("PR",""),"--name-only"]).split()
+                  files = (sh(["gh","pr","diff",os.environ.get("PR",""),"--name-only"])
+                           or sh(["git","diff","--name-only","HEAD^1","HEAD"])).split()
               else:
                   before = os.environ.get("BEFORE","") or ""; after = os.environ.get("AFTER","") or "HEAD"
                   rng = "HEAD~1..HEAD" if (not before or set(before) <= {"0"}) else before+".."+after
