@@ -53,8 +53,10 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           git submodule sync --recursive || true
-          # Submodule to (tldraw-fork 653MB) clone FULL history tốn ~38 phút trên box — 88% thời gian
-          # của cả job build. CI không cần history submodule: --depth 1 đo được 59s / 83MB.
+          # Submodule to (tldraw-fork 653MB) clone FULL history tốn ~38 phút khi _work LẠNH (runner mới,
+          # sau khi dọn đĩa, build đầu của repo) — đo run 31861158480: 37m53. Warm thì ~6s, nên đây là
+          # cái bẫy lúc thêm runner chứ không phải phí mỗi build. CI không cần history submodule.
+          # --depth 1 đo E2E cả 2 submodule smart-class: 8s / 58MB.
           # Fallback blobless (~2m14s) cho trường hợp SHA ghim không nằm ở đỉnh branch nên shallow fetch từ chối.
           SM_FAST="--init --recursive --jobs 4 --depth 1"
           SM_SLOW="--init --recursive --jobs 4 --filter=blob:none"
