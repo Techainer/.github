@@ -1,0 +1,61 @@
+# Kiểm tra NĂNG LỰC runner, không phải kiểm tra code.
+# Vì sao cần: từ khi các job nhẹ đổi sang `runs-on: self-hosted`, chúng có thể rơi vào BẤT KỲ runner nào
+# trong pool. `promote` ghi tag production rồi bắn card CHỜ DUYỆT — rơi vào runner không ra được
+# api.telegram.org thì deploy đỏ. Chạy cái này TRƯỚC khi tin một runner mới.
+# Mẹo: matrix N job cùng lúc + runs-on: self-hosted → 1 runner chỉ ôm được 1 job, nên N job sẽ trải
+# ra tối đa N runner khác nhau. Không cần biết trước label của từng máy.
+name: runner-capability-smoke
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Label runner cần soi (self-hosted = trải khắp pool)"
+        default: self-hosted
+        type: string
+      fanout:
+        description: "Số job song song (>= số runner muốn phủ)"
+        default: "6"
+        type: string
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      slots: ${{ steps.g.outputs.slots }}
+    steps:
+      - id: g
+        run: python3 -c "import json,os;print('slots='+json.dumps(list(range(int(os.environ['N'])))))" >> "$GITHUB_OUTPUT"
+        env:
+          N: ${{ inputs.fanout }}
+  probe:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: ${{ fromJSON(needs.plan.outputs.slots) }}
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Soi năng lực
+        run: |
+          S="$GITHUB_STEP_SUMMARY"
+          ok(){ printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "$S"; echo "$1: $2 — $3"; }
+          echo "## runner \`$RUNNER_NAME\` (slot ${{ matrix.slot }})" >> "$S"
+          echo "" >> "$S"; echo "| mục | kết quả | chi tiết |" >> "$S"; echo "|---|---|---|" >> "$S"
+          ok "hostname" "$(hostname)" "$(uname -sr)"
+          # python3: ai-review + notify-push chạy script python trần
+          if command -v python3 >/dev/null; then ok "python3" "✅" "$(python3 -V 2>&1)"; else ok "python3" "❌ THIẾU" "ai-review sẽ phải setup-python"; fi
+          # gh: thiếu thì ai-review rơi về fallback git (đã lo), nhưng promote DÙNG gh api để lấy commit/review
+          if command -v gh >/dev/null; then ok "gh" "✅" "$(gh --version|head -1)"; else ok "gh" "⚠️ THIẾU" "promote mất phần chi tiết trong card"; fi
+          ok "git" "$(command -v git >/dev/null && echo ✅ || echo ❌)" "$(git --version 2>&1)"
+          # sudo không mật khẩu: KHÔNG còn cần sau 16480d4, kiểm để biết máy thuộc loại nào
+          if sudo -n true 2>/dev/null; then ok "sudo -n" "✅" "có (không còn bắt buộc)"; else ok "sudo -n" "➖" "không có — đúng như thiết kế mới"; fi
+          # docker: job nhẹ KHÔNG cần; có docker nghĩa là máy này cũng nhận build được
+          if docker info >/dev/null 2>&1; then ok "docker" "✅" "máy này build được"; else ok "docker" "➖" "chỉ chạy job nhẹ"; fi
+          ok "RUNNER_TEMP ghi được" "$(mkdir -p "$RUNNER_TEMP/probe" && echo ✅ || echo ❌)" "$RUNNER_TEMP"
+          # egress THẬT — đây là thứ làm promote đỏ nếu thiếu
+          tg=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://api.telegram.org 2>&1 || echo FAIL)
+          if [ "$tg" = "200" ] || [ "$tg" = "302" ] || [ "$tg" = "404" ]; then ok "→ api.telegram.org" "✅" "HTTP $tg"; else ok "→ api.telegram.org" "❌ CHẶN" "HTTP/err: $tg — promote sẽ ĐỎ ở đây"; fi
+          gr=$(curl -sSL --max-time 25 -o /dev/null -w '%{http_code}' https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz 2>&1 || echo FAIL)
+          if [ "$gr" = "200" ]; then ok "→ tải kustomize" "✅" "HTTP 200"; else ok "→ tải kustomize" "❌" "HTTP/err: $gr — ai-review profile=deploy sẽ hỏng"; fi
+          gh_=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://api.github.com 2>&1 || echo FAIL)
+          ok "→ api.github.com" "$([ "$gh_" = "200" ] && echo ✅ || echo ❌)" "HTTP $gh_"
+          df -h "$RUNNER_TEMP" | tail -1 | awk '{printf "| đĩa | %s trống | %s dùng |\n", $4, $5}' >> "$S"
