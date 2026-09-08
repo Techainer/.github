@@ -30,7 +30,8 @@ jobs:
   review:
     # CHỈ gate code MỚI (push). workflow_dispatch = redeploy code đã review lúc push → KHÔNG re-review (tránh chặn oan bởi commit cũ).
     # skip_review: 'true' → job skip → build vẫn chạy (điều kiện build đã chấp nhận review skipped).
-    if: inputs.skip_review != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # HỆ QUẢ: dispatch bỏ qua gate hoàn toàn. Ai có quyền dispatch đều build được SHA mà review đã fail.
+    if: inputs.skip_review != 'true' && github.event_name == 'push'
     uses: Techainer/.github/.github/workflows/reusable-ai-review.yml@main
     with:
       profile: code
