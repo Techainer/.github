@@ -12,6 +12,7 @@ on:
       env_file_src: { required: false, type: string, default: '' }   # path trên runner -> cp vào .env (self-hosted)
       build_env:    { required: false, type: string, default: '' }   # --build-arg ENV=
       submodules:   { required: false, type: string, default: 'false' }  # 'recursive' để clone submodule (vd face-engine)
+      skip_review:  { required: false, type: string, default: 'false' }  # 'true' = tắt gate AI-review cho repo đó
     secrets:
       DOCKER_HUB_USERNAME: { required: false }
       DOCKER_HUB_PASSWORD: { required: false }
@@ -28,7 +29,8 @@ jobs:
   # Secret OPENAI_* chảy vào qua `secrets: inherit` ở deploy.yml. Thiếu key → reusable-ai-review fail-open (không chặn).
   review:
     # CHỈ gate code MỚI (push). workflow_dispatch = redeploy code đã review lúc push → KHÔNG re-review (tránh chặn oan bởi commit cũ).
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # skip_review: 'true' → job skip → build vẫn chạy (điều kiện build đã chấp nhận review skipped).
+    if: inputs.skip_review != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     uses: Techainer/.github/.github/workflows/reusable-ai-review.yml@main
     with:
       profile: code
