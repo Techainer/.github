@@ -34,6 +34,12 @@ jobs:
     # (Trước đây chỉ 'push' → workflow_dispatch bị skip → build needs:review cũng skip → GÃY staging deploy.)
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ inputs.runner }}
+    # Push dồn dập cùng nhánh → chỉ review commit MỚI NHẤT, huỷ run cũ đang chờ/chạy (tránh ngập hàng đợi runner).
+    # Key có github.workflow (= tên workflow CALLER) + event_name: 'AI Review' không huỷ nhầm job review
+    # gate deploy trong ci-cd.yml, run push không huỷ run pull_request (check bắt buộc của PR).
+    concurrency:
+      group: ai-review-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: true
     permissions:
       contents: write        # push: comment lên commit
       pull-requests: write    # PR: comment lên PR
