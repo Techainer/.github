@@ -37,8 +37,17 @@ jobs:
     permissions:
       contents: write        # push: comment lên commit
       pull-requests: write    # PR: comment lên PR
+    # CÔNG TẮC: 'false' = tạm tắt toàn bộ AI review (27/10/2026: provider LLM hết tiền, HTTP 402).
+    # Job vẫn SUCCESS (không làm gãy `build: needs: review` ở reusable-build / ci-cd develop), chỉ bỏ mọi step.
+    # Bật lại: đổi thành 'true' (hoặc merge PR #5 kèm endpoint mới).
+    env:
+      AI_REVIEW_ENABLED: 'false'
     steps:
+      - name: AI review đang TẠM TẮT
+        if: env.AI_REVIEW_ENABLED != 'true'
+        run: echo "::notice title=AI review tạm tắt::Hết token LLM — commit/PR này KHÔNG được AI review."
       - uses: actions/checkout@v4
+        if: env.AI_REVIEW_ENABLED == 'true'
         with:
           fetch-depth: 0
       # runs-on giờ là input → job có thể rơi vào BẤT KỲ runner nào trong pool. 2 step dưới gỡ nốt các
@@ -46,13 +55,14 @@ jobs:
       # không biến thành "fail trên runner mới".
       - name: Đảm bảo có python3 (runner trần chưa chắc có)
         id: py
+        if: env.AI_REVIEW_ENABLED == 'true'
         run: command -v python3 >/dev/null || echo "need=1" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
-        if: steps.py.outputs.need == '1'
+        if: env.AI_REVIEW_ENABLED == 'true' && steps.py.outputs.need == '1'
         with:
           python-version: "3.12"
       - name: Cài kustomize + kubeconform (validate config cứng — chỉ profile deploy)
-        if: ${{ inputs.profile == 'deploy' }}
+        if: env.AI_REVIEW_ENABLED == 'true' && inputs.profile == 'deploy'
         run: |
           set -euo pipefail
           # Cài vào RUNNER_TEMP + GITHUB_PATH thay vì `sudo tar -C /usr/local/bin`: sudo-không-mật-khẩu
@@ -63,6 +73,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/kustomize" version && "$RUNNER_TEMP/bin/kubeconform" -v
       - name: AI review
+        if: env.AI_REVIEW_ENABLED == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
