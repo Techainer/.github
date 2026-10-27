@@ -1,10 +1,14 @@
 # AI code review gate — chấm diff bằng LLM (OpenAI-compatible) theo rules THS.
-# CHẠY cả PR lẫn PUSH:
-#   - pull_request  → diff cả PR, comment lên PR, FAIL = chặn merge (nếu bật branch protection).
-#   - push          → diff các commit vừa push, comment lên commit, FAIL = commit đỏ (cờ cảnh báo).
-# profile:
-#   - code   (mặc định) → review CODE (bug/security/error-handling/architecture).
-#   - deploy            → review CONFIG/K8S an toàn deploy (dùng cho repo deployment).
+# Logic nằm ở .github/scripts/ai_review.py (repo này public → job tự checkout script).
+# CHỈ review khi đáng tiền (chốt 27/10, sau vụ getnexai 402):
+#   - pull_request (không draft) → comment 1 lần/PR (sửa tại chỗ), FAIL = chặn merge nếu bật protection.
+#   - push vào nhánh trong `review_branches` (staging/prod/master) → comment lên commit, FAIL = commit đỏ.
+#     SHA đã review ở PR đã merge / đã có comment review → DÙNG LẠI verdict, không gọi LLM.
+#   - mọi event khác (push develop/feature, workflow_dispatch…) → job vẫn SUCCESS nhưng không gọi LLM.
+#     Skip ở STEP chứ không ở `if:` của job: ci-cd.yml có `build-develop: needs: review` không kèm
+#     !cancelled() → job skipped sẽ kéo build develop skip theo.
+# profile: code (mặc định, app repo) | deploy (repo deployment: kustomize+kubeconform cứng, commit chỉ đổi tag = PASS).
+# LLM lỗi → fail-open CÓ cảnh báo (::warning + comment "KHÔNG CHẠY ĐƯỢC"), không chặn build.
 # Caller truyền tường minh 2 secret (least-privilege): OPENAI_API_KEY, OPENAI_BASE_URL.
 name: reusable-ai-review
 on:
@@ -13,272 +17,96 @@ on:
       profile:
         type: string
         default: code
+      # Tên trung tính; LiteLLM map alias → model thật (đổi backend không phải sửa CI).
       model:
         type: string
-        default: claude-sonnet-4-6
-      # Job này chỉ gọi HTTP + chạy python (~31s), KHÔNG đụng docker daemon → không cần ghim đúng
-      # box build. Ghim 'techainer-gkebooks-1' làm nó xếp hàng sau build 40 phút của repo khác.
-      # 'self-hosted' là label tự động mọi runner self-hosted đều có → hôm nay vẫn về đúng box đó,
-      # nhưng khi thêm runner nhẹ vào pool thì tự chảy sang runner rảnh. Ghim lại bằng input nếu cần.
+        default: ai-review
+      # Tham số phụ gộp vào body request (JSON). Mặc định tắt thinking của Qwen3: review cần JSON gọn,
+      # thinking làm chậm gấp nhiều lần và dễ chạm timeout 100s của Cloudflare.
+      llm_extra_body:
+        type: string
+        default: '{"chat_template_kwargs":{"enable_thinking":false}}'
+      review_branches:
+        type: string
+        default: production,production-staging,staging,master,main
+      # Job chỉ gọi HTTP + chạy python, KHÔNG đụng docker → không ghim box build.
       runner:
         type: string
         default: self-hosted
     secrets:
       OPENAI_API_KEY:
-        required: false   # thiếu → python fail-open skip (không chặn build oan)
+        required: false   # thiếu → fail-open có cảnh báo (không chặn build oan)
       OPENAI_BASE_URL:
         required: false
 jobs:
   ai-review:
-    # chạy mọi event (push, workflow_dispatch, …) TRỪ PR draft.
-    # (Trước đây chỉ 'push' → workflow_dispatch bị skip → build needs:review cũng skip → GÃY staging deploy.)
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ inputs.runner }}
+    # PR: push mới huỷ review cũ. Push: group theo ref+SHA → standalone + build-gate cùng SHA chạy LẦN LƯỢT,
+    # lần sau thấy comment của lần trước và dùng lại verdict. KHÔNG huỷ run push (notify-push đọc verdict).
+    concurrency:
+      group: ai-review-${{ github.repository }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.ref, github.sha) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     permissions:
       contents: write        # push: comment lên commit
       pull-requests: write    # PR: comment lên PR
     steps:
+      - name: Có cần review không?
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          BRANCHES: ${{ inputs.review_branches }}
+        run: |
+          run=false
+          case "$EVENT" in
+            pull_request) run=true ;;
+            push) case ",${BRANCHES// /}," in *",$BRANCH,"*) run=true ;; esac ;;
+          esac
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          [ "$run" = true ] || echo "::notice title=Bỏ qua AI review::$EVENT trên '$BRANCH' — chỉ review PR và push vào: $BRANCHES"
       - uses: actions/checkout@v4
+        if: steps.decide.outputs.run == 'true'
         with:
           fetch-depth: 0
-      # runs-on giờ là input → job có thể rơi vào BẤT KỲ runner nào trong pool. 2 step dưới gỡ nốt các
-      # phụ thuộc ngầm vào riêng box build (sudo không mật khẩu, python3 cài sẵn) để "chảy sang runner rảnh"
-      # không biến thành "fail trên runner mới".
+      - uses: actions/checkout@v4
+        if: steps.decide.outputs.run == 'true'
+        with:
+          repository: Techainer/.github
+          ref: main
+          path: .ai-review-tool
+          sparse-checkout: .github/scripts
+          persist-credentials: false
       - name: Đảm bảo có python3 (runner trần chưa chắc có)
         id: py
+        if: steps.decide.outputs.run == 'true'
         run: command -v python3 >/dev/null || echo "need=1" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
-        if: steps.py.outputs.need == '1'
+        if: steps.decide.outputs.run == 'true' && steps.py.outputs.need == '1'
         with:
           python-version: "3.12"
       - name: Cài kustomize + kubeconform (validate config cứng — chỉ profile deploy)
-        if: ${{ inputs.profile == 'deploy' }}
+        if: steps.decide.outputs.run == 'true' && inputs.profile == 'deploy'
         run: |
           set -euo pipefail
-          # Cài vào RUNNER_TEMP + GITHUB_PATH thay vì `sudo tar -C /usr/local/bin`: sudo-không-mật-khẩu
-          # KHÔNG phải thứ mọi self-hosted runner đều có, mà chỉ để chạy 2 binary dùng-một-lần.
+          # RUNNER_TEMP + GITHUB_PATH thay vì sudo: không phải self-hosted nào cũng có sudo không mật khẩu.
           mkdir -p "$RUNNER_TEMP/bin"
           curl -sL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | tar xz -C "$RUNNER_TEMP/bin" kustomize
           curl -sL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz -C "$RUNNER_TEMP/bin" kubeconform
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/bin/kustomize" version && "$RUNNER_TEMP/bin/kubeconform" -v
       - name: AI review
+        if: steps.decide.outputs.run == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           MODEL: ${{ inputs.model }}
+          LLM_EXTRA_BODY: ${{ inputs.llm_extra_body }}
           PROFILE: ${{ inputs.profile }}
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
-        run: |
-          python3 - <<'PY'
-          import os, json, re, subprocess, urllib.request
-          event   = os.environ.get("EVENT","")
-          repo    = os.environ.get("REPO","")
-          profile = os.environ.get("PROFILE","code")
-
-          def sh(cmd):
-              # gh CLI có sẵn trên runner GitHub-hosted nhưng KHÔNG trên self-hosted trần. Job này chạy
-              # runs-on: inputs.runner nên có thể rơi vào runner bất kỳ → thiếu gh phải fallback git,
-              # KHÔNG được để FileNotFoundError làm chết gate (chết = chặn build oan mọi repo).
-              try:
-                  return subprocess.run(cmd, capture_output=True, text=True).stdout
-              except FileNotFoundError:
-                  print("⚠️  runner thiếu binary '" + cmd[0] + "' -> fallback")
-                  return ""
-
-          # ---- lấy diff theo loại sự kiện ----
-          if event == "pull_request":
-              # checkout@v4 ở event pull_request lấy MERGE COMMIT (parent1 = base) → `HEAD^1 HEAD`
-              # chính là diff của PR, dùng khi runner không có gh.
-              diff = sh(["gh","pr","diff",os.environ.get("PR","")]) or sh(["git","diff","HEAD^1","HEAD"])
-          else:  # push
-              before = os.environ.get("BEFORE","") or ""
-              after  = os.environ.get("AFTER","") or "HEAD"
-              if (not before) or set(before) <= {"0"}:
-                  diff = sh(["git","diff","HEAD~1..HEAD"]) or sh(["git","show","--format=","HEAD"])
-              else:
-                  diff = sh(["git","diff",before+".."+after])
-          # ---- LỌC diff: chỉ review CODE substantive (best-practice). Bỏ CI/workflow (.github), lock, generated, binary. ----
-          # Tránh review nhầm chính gate CI (ci-cd.yml) rồi FAIL oan; tránh nitpick file sinh tự động.
-          def _excluded(p):
-              p = p.lower()
-              if p.startswith(".github/"): return True
-              if any(p.endswith(x) for x in (".lock","-lock.json","lock.yaml","lock.yml","go.sum",".min.js",".min.css",".map",".svg",".png",".jpg",".jpeg",".ico",".gif",".webp",".woff",".woff2",".ttf",".pdf",".lockb")): return True
-              if any(s in p for s in ("/dist/","/build/","/vendor/","/node_modules/","/__generated__/",".generated.","/gen/")): return True
-              return False
-          _blocks = re.split(r'(?m)^(?=diff --git )', diff)
-          _kept = [b for b in _blocks if not (re.match(r'diff --git a/\S+ b/(\S+)', b) and _excluded(re.match(r'diff --git a/\S+ b/(\S+)', b).group(1)))]
-          diff = "".join(_kept)[:60000]
-          if not diff.strip():
-              print("Diff chỉ gồm file loại trừ (CI/lock/generated) hoặc rỗng — skip, PASS."); raise SystemExit(0)
-
-          # ---- NỘI DUNG FILE đổi (full context → review SÂU, không chỉ hunks) ----
-          _changed = [m.group(1) for b in _kept for m in [re.match(r'diff --git a/\S+ b/(\S+)', b)] if m]
-          _SRC = (".py",".js",".jsx",".ts",".tsx",".go",".java",".rb",".php",".vue",".yaml",".yml",".sh",".sql",".rs",".c",".cpp",".h",".cs",".kt")
-          _fc = []; _tot = 0
-          for _p in _changed[:20]:
-              if not _p.lower().endswith(_SRC): continue
-              try: _c = open(_p, encoding="utf-8", errors="ignore").read()[:15000]
-              except Exception: continue
-              if _tot + len(_c) > 50000: break
-              _tot += len(_c); _fc.append("=== FILE: " + _p + " ===\n" + _c)
-          files_blob = "\n\n".join(_fc)
-
-          # ---- VALIDATE CỨNG config toàn commit (profile deploy): kustomize build + kubeconform (schema k8s) ----
-          val_errors = []
-          if profile == "deploy":
-              if event == "pull_request":
-                  files = (sh(["gh","pr","diff",os.environ.get("PR",""),"--name-only"])
-                           or sh(["git","diff","--name-only","HEAD^1","HEAD"])).split()
-              else:
-                  before = os.environ.get("BEFORE","") or ""; after = os.environ.get("AFTER","") or "HEAD"
-                  rng = "HEAD~1..HEAD" if (not before or set(before) <= {"0"}) else before+".."+after
-                  files = sh(["git","diff","--name-only",rng]).split()
-              dirs = sorted({os.path.dirname(f) for f in files if f.endswith((".yaml",".yml"))})
-              checked = []
-              for d in dirs:
-                  if not d: continue
-                  if os.path.exists(os.path.join(d,"kustomization.yaml")) or os.path.exists(os.path.join(d,"kustomization.yml")):
-                      checked.append(d)
-                      kb = subprocess.run(["kustomize","build",d], capture_output=True, text=True)
-                      if kb.returncode != 0:
-                          val_errors.append(d+" — kustomize build LỖI: "+kb.stderr.strip()[:300]); continue
-                      kc = subprocess.run(["kubeconform","-strict","-ignore-missing-schemas","-summary","-"],
-                                          input=kb.stdout, capture_output=True, text=True)
-                      if kc.returncode != 0:
-                          val_errors.append(d+" — kubeconform LỖI (schema k8s không hợp lệ): "+(kc.stdout+kc.stderr).strip()[:300])
-              print("Validate config dirs:", checked, "| errors:", len(val_errors))
-
-          # ---- rules theo profile ----
-          CODE_RULES = (
-            "BUG/LOGIC: syntax, type, null/None, off-by-one, race, thiếu import, sai điều kiện. "
-            "SECURITY: injection (SQL/XSS/command), secret/credential hardcode, thiếu validate input, path traversal. "
-            "ERROR-HANDLING: bare except, nuốt lỗi, thiếu cleanup/rollback, sai propagate, resource leak. "
-            "ARCHITECTURE: vi phạm convention/CLAUDE.md, trùng lặp nên tách, breaking-change API không migrate."
-          )
-          DEPLOY_RULES = (
-            "AN TOÀN DEPLOY (manifest k8s / config): KHÔNG hạ replicas về 0 ngoài ý muốn, "
-            "KHÔNG thêm secret/credential cleartext mới, KHÔNG giảm resource limit/request vô lý (gây OOM/thiếu), "
-            "thay đổi image NÊN chỉ là đổi TAG (đổi image-name/registry lạ phải nghi ngờ), "
-            "sửa ConfigMap/env phải khớp app (không xoá key app đang dùng), "
-            "migration/job DB phải an toàn (không phá/mất dữ liệu). Diff YAML phải hợp lệ."
-          )
-          RULES = DEPLOY_RULES if profile == "deploy" else CODE_RULES
-          role  = ("senior DevOps review manifest triển khai" if profile == "deploy"
-                   else "senior code reviewer")
-
-          prompt = (
-            "Bạn là " + role + ". Review thay đổi (DIFF) theo RULES; ĐỌC KỸ NỘI DUNG FILE kèm dưới để hiểu ngữ cảnh + TRUY VẾT tác động (data flow, null, edge case, side-effect, tương tác giữa các hàm) — KHÔNG chỉ nhìn dòng đổi bề mặt. "
-            "Trả về DUY NHẤT 1 JSON hợp lệ: {\"verdict\":\"PASS\"|\"FAIL\",\"summary\":\"1-2 câu tiếng Việt\",\"issues\":[\"file — vấn đề + gợi ý sửa\"]}. "
-            "NGUYÊN TẮC (best-practice code review): "
-            "(1) Ưu tiên theo mức độ: correctness + security TRƯỚC, rồi bug-logic/error-handling, rồi architecture. "
-            "(2) FAIL CHỈ khi có lỗi CHẮC CHẮN gây hỏng/nguy hiểm (bug rõ ràng, security thật, mất dữ liệu, breaking-change không migrate). "
-            "KHÔNG FAIL vì: style/format/naming/preference, thiếu test, hay nghi-ngờ mơ hồ — những thứ đó = PASS + ghi vào issues như góp ý. "
-            "TUYỆT ĐỐI KHÔNG phán lỗi COMPILE/SYNTAX/BUILD-FAIL: pipeline đã `build` (biên dịch) TRƯỚC bước này, nên nếu code đã tồn tại trong commit thì nó CHẮC CHẮN compile được — bạn nghĩ 'không compile/sai cú pháp' thì gần như chắc BẠN nhầm cú pháp ngôn ngữ (vd Go composite-literal elision `map[string][]string{k:{v}}` HỢP LỆ = `[]string{v}`; Go generics; Python f-string; TS satisfies). Gặp nghi-ngờ cú pháp → BỎ QUA, coi như PASS, KHÔNG đưa vào issues. "
-            "(3) Với CI/config: chỉ flag lỗ hổng THẬT (secret hardcode bị lộ, script-injection biểu thức GHA nhúng trong run, permissions quá rộng, pull_request_target checkout code PR) — "
-            "KHÔNG flag pattern chuẩn NỘI BỘ (reusable `Techainer/.github/...@main` là tin cậy; truyền secret cho workflow nội bộ là bình thường). "
-            "(4) issues phải CỤ THỂ: nêu file + vấn đề + cách sửa; đừng chung chung. Không có lỗi rõ → PASS.\n\n"
-            "RULES: " + RULES + "\n\nDIFF:\n" + diff + (("\n\nNỘI DUNG FILE (đọc để review sâu):\n" + files_blob) if files_blob else "")
-          )
-          if val_errors:
-              # Validate CỨNG thắng: config không build/sai schema = FAIL, KHÔNG cần hỏi LLM (kể cả thiếu key)
-              content = json.dumps({"verdict":"FAIL",
-                  "summary":"Config KHÔNG build được / sai schema k8s — CHẶN deploy (validate cứng: kustomize build + kubeconform).",
-                  "issues":["🔧 "+e for e in val_errors]})
-          else:
-              base = (os.environ.get("OPENAI_BASE_URL","") or "").rstrip("/")
-              if not base or not os.environ.get("OPENAI_API_KEY"):
-                  print("Thiếu OPENAI_BASE_URL/OPENAI_API_KEY — skip (fail-open)."); raise SystemExit(0)
-              body = json.dumps({"model":os.environ.get("MODEL","claude-sonnet-4-6"),"temperature":0,
-                                 "messages":[{"role":"user","content":prompt}]}).encode()
-              req = urllib.request.Request(base + "/chat/completions", data=body,
-                    headers={"Authorization":"Bearer "+os.environ["OPENAI_API_KEY"],"Content-Type":"application/json"})
-              try:
-                  resp = json.load(urllib.request.urlopen(req, timeout=150))
-                  content = resp["choices"][0]["message"]["content"]
-              except Exception as e:
-                  print("LLM lỗi (fail-open, không chặn CI):", e); raise SystemExit(0)
-
-          m = re.search(r'\{.*\}', content, re.S)
-          v = {}
-          try: v = json.loads(m.group(0)) if m else {}
-          except Exception: pass
-          if v.get("verdict"):
-              verdict = str(v["verdict"]).upper()
-              issues  = v.get("issues") or []
-              summary = v.get("summary", content[:300])
-          else:
-              # Model KHÔNG trả JSON verdict hợp lệ (định dạng lạ / cắt output) → KHÔNG chặn deploy
-              # (fail-open: gate Telegram Duyệt vẫn gác cuối). Ghi rõ để người xem tự rà tay.
-              verdict = "PASS"; issues = []
-              summary = "⚠️ AI review chưa phản hồi đúng định dạng JSON — BỎ QUA, không chặn (nên tự rà tay diff)."
-
-          # ---- BACKSTOP CỨNG chống false-positive compile/syntax (không dựa vào LLM tự tuân prompt) ----
-          # Lý do: bước `build` của pipeline mới là nguồn sự thật về biên dịch; nếu code THẬT lỗi compile
-          # thì workflow build FAIL và chặn deploy độc lập. Reviewer LLM hay nhầm cú pháp (vd Go elision
-          # map[K][]T{k:{v}} hợp lệ) → tuyệt đối không để nó FAIL vì lý do compile/syntax.
-          # KHÔNG áp cho val_errors (kustomize/kubeconform) vì đó là lỗi build config THẬT, deterministic.
-          if not val_errors and issues:
-              _cpat = re.compile(r"(kh[oô]ng\s+(?:compile|build|bi[êe]n\s*d[ịi]ch)|compile[\s-]*error|"
-                                 r"syntax[\s-]*error|sai\s*c[uú]\s*ph[áa]p|l[oô]i\s*c[uú]\s*ph[áa]p|"
-                                 r"build[\s-]*fail|(?:won'?t|cannot|does\s*not|will\s*not)\s*compile|"
-                                 r"kh[oô]ng\s*bi[êe]n\s*d[ịi]ch\s*[đd][ưuơợ]?[ơợ]c)", re.I)
-              _drop = [i for i in issues if _cpat.search(str(i))]
-              if _drop:
-                  issues = [i for i in issues if i not in _drop]
-                  for _d in _drop:
-                      print("⏭️  DROP claim compile/syntax (build đã lo, reviewer không tính):", str(_d)[:180])
-                  if verdict == "FAIL" and not issues:
-                      verdict = "PASS"
-                      summary = ("Đã loại " + str(len(_drop)) + " cảnh báo compile/syntax (build lo biên dịch) "
-                                 "→ không còn lỗi chặn. " + summary)
-
-          head = "✅ PASS" if verdict == "PASS" else "⚠️ FAIL — cần sửa"
-          _ref = ("PR #" + os.environ.get("PR","")) if event == "pull_request" else ("commit `" + os.environ.get("AFTER","")[:7] + "`")
-          _issues_md = "\n".join(str(n) + ". " + str(i) for n, i in enumerate(issues, 1))
-          comment = ("## 🤖 AI Review — " + head + "\n\n"
-                     + "> " + summary + "\n\n"
-                     + (("### 🔎 Vấn đề (" + str(len(issues)) + ")\n" + _issues_md) if issues else "_Không có vấn đề._")
-                     + "\n\n<sub>" + role + " · model `" + os.environ.get("MODEL","") + "` · " + _ref + " · profile `" + profile + "`</sub>")
-
-          # (a) Job Summary — Actions UI render markdown ĐẸP (tab "Summary" của run).
-          gs = os.environ.get("GITHUB_STEP_SUMMARY")
-          if gs:
-              try: open(gs, "a", encoding="utf-8").write(comment + "\n")
-              except Exception: pass
-          # (b) IN ĐẦY ĐỦ ra LOG (stdout) — dev thấy NGAY tại step, khỏi mò Summary/commit-comment.
-          _bar = "─" * 66
-          print("\n" + _bar)
-          print("🤖 AI REVIEW — " + head + "   [" + _ref.replace("`","") + " · profile " + profile + "]")
-          print(_bar)
-          print(summary)
-          if issues:
-              print("\n🔎 Vấn đề (" + str(len(issues)) + "):")
-              for _n, _i in enumerate(issues, 1):
-                  print("  " + str(_n) + ". " + str(_i))
-          else:
-              print("\n✅ Không có vấn đề.")
-          print(_bar)
-          if verdict != "PASS":
-              print("→ Chi tiết render đẹp ở tab 'Summary' của run này, và comment trên " + _ref.replace("`",""))
-          print("Verdict:", verdict, "| issues:", len(issues))
-
-          # ---- đăng comment theo loại sự kiện (fail-open, NUỐT output JSON) ----
-          try:
-              if event == "pull_request":
-                  subprocess.run(["gh","pr","comment",os.environ["PR"],"--body",comment], capture_output=True)
-              else:
-                  subprocess.run(["gh","api","-X","POST",
-                                  "repos/%s/commits/%s/comments" % (repo, os.environ.get("AFTER","")),
-                                  "-f","body="+comment, "--silent"], capture_output=True)
-          except Exception as e:
-              print("đăng comment lỗi (bỏ qua):", str(e)[:120])
-
-          if verdict != "PASS":
-              raise SystemExit(1)
-          PY
+        run: python3 .ai-review-tool/.github/scripts/ai_review.py

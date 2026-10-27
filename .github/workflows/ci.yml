@@ -1,0 +1,19 @@
+# Kiểm chính repo này trước khi merge: mọi repo app gọi reusable `@main`, nên 1 file vỡ = vỡ CI cả org
+# (sự cố 15/07: biểu thức GHA literal trong run-block → "failed to parse workflow" trên 16 repo, ~8h).
+# Repo public → runner GitHub-hosted miễn phí, không chiếm runner self-hosted.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color -shellcheck= .github/workflows/*.yml
+      - name: unit test ai_review.py
+        run: python3 -m unittest discover -s .github/scripts -v
