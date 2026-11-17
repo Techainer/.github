@@ -95,7 +95,7 @@ jobs:
         run: |
           echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME || 'techainer1t' }}" --password-stdin \
             || echo "login skipped/failed -> relying on ambient docker auth"
-      - name: Build & push
+      - name: Build
         run: |
           set -euo pipefail
           ARGS=()
@@ -105,7 +105,35 @@ jobs:
           # Dockerfile phải có `ARG ENV_HASH` trước RUN build thì mới ăn.
           [ -f .env ] && ARGS+=(--build-arg "ENV_HASH=$(sha256sum .env | cut -d' ' -f1)")
           docker build "${ARGS[@]}" -t "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" -f "${{ inputs.dockerfile }}" "${{ inputs.context }}"
-          docker push "${{ inputs.image }}:${{ steps.meta.outputs.tag }}"
+      # GUARD (chỉ nhánh production): quét output build trong image TRƯỚC khi push; FAIL nếu bundle chứa host backend của staging
+      # (URL có scheme tới api-staging., go-staging., hasura/auth-staging.) => bundle prod trỏ nhầm môi trường (env/cache staging lọt vào build prod).
+      # Host staging khác (lms-staging, smart-class-staging, storage-staging...) nằm trong bảng ánh xạ host->môi trường của nhiều app
+      # nên chỉ cảnh báo (::warning::), không fail.
+      - name: Guard - bundle production không chứa host backend staging
+        if: ${{ github.ref_name == 'production' }}
+        run: |
+          set -euo pipefail
+          IMG="${{ inputs.image }}:${{ steps.meta.outputs.tag }}"
+          OUT="$(mktemp -d)"
+          CID="$(docker create "$IMG" /bin/true 2>/dev/null || docker create --entrypoint /bin/true "$IMG")"
+          trap 'docker rm -f "$CID" >/dev/null 2>&1 || true; rm -rf "$OUT" "$OUT.hits"' EXIT
+          # Chỉ giải nén chỗ chứa output build (Next standalone/static, Vite dist, nginx html); bỏ node_modules.
+          docker export "$CID" | tar -x -C "$OUT" --wildcards --exclude='*/node_modules/*' \
+            'app/.next/*' 'app/dist/*' 'app/build/*' 'app/public/*' 'app/out/*' 'usr/share/nginx/html/*' 2>/dev/null || true
+          N=$(find "$OUT" -type f | wc -l)
+          if [ "$N" -eq 0 ]; then echo "::warning::guard: không tìm thấy output build trong image (đường dẫn lạ), bỏ qua quét"; exit 0; fi
+          FAIL_RE='(https?|wss?)://(api|go|hasura|auth)(-[a-z0-9]+)*-staging\.[a-z0-9.-]*(truonghocsoquocgia|thsqg|gkebooks)\.[a-z]+'
+          WARN_RE='[a-z0-9.-]*(-staging|staging\.)[a-z0-9.-]*(truonghocsoquocgia|thsqg)\.vn'
+          # Ghi ra file rồi mới kiểm: `tee | grep -q` dưới pipefail có thể SIGPIPE và bỏ sót hit thật.
+          { grep -rEIohi "$FAIL_RE" "$OUT" || true; } | sort | uniq -c | sort -rn > "$OUT.hits"
+          if [ -s "$OUT.hits" ]; then
+            echo "::error::Bundle production chứa host backend staging (sai môi trường) -> KHÔNG push image:"; cat "$OUT.hits"
+            exit 1
+          fi
+          grep -rEIohi "$WARN_RE" "$OUT" | sort | uniq -c | sort -rn | head -10 | sed 's/^/::warning::host staging trong bundle prod (kiểm tay nếu là bảng ánh xạ): /' || true
+          echo "guard OK: $N tệp đã quét, không có host backend staging"
+      - name: Push
+        run: docker push "${{ inputs.image }}:${{ steps.meta.outputs.tag }}"
       - name: Cleanup
         if: always()
         run: |
