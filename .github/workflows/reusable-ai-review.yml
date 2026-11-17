@@ -42,14 +42,20 @@ jobs:
   ai-review:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ inputs.runner }}
-    # PR: push mới huỷ review cũ. Push: group theo ref+SHA → standalone + build-gate cùng SHA chạy LẦN LƯỢT,
-    # lần sau thấy comment của lần trước và dùng lại verdict. KHÔNG huỷ run push (notify-push đọc verdict).
+    # Push dồn dập cùng nhánh → chỉ review commit MỚI NHẤT, huỷ run cũ đang chờ/chạy (tránh ngập hàng đợi runner).
+    # Key có github.workflow (= tên workflow CALLER) + event_name: 'AI Review' không huỷ nhầm job review
+    # gate deploy trong ci-cd.yml, run push không huỷ run pull_request (check bắt buộc của PR).
     concurrency:
-      group: ai-review-${{ github.repository }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.ref, github.sha) }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      group: ai-review-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: true
     permissions:
       contents: write        # push: comment lên commit
       pull-requests: write    # PR: comment lên PR
+    # CÔNG TẮC: 'false' = tạm tắt toàn bộ AI review (27/10/2026: provider LLM hết tiền, HTTP 402).
+    # Job vẫn SUCCESS (không làm gãy `build: needs: review` ở reusable-build / ci-cd develop), chỉ bỏ mọi step.
+    # Bật lại: đổi thành 'true' (hoặc merge PR #5 kèm endpoint mới).
+    env:
+      AI_REVIEW_ENABLED: 'false'
     steps:
       - name: Có cần review không?
         id: decide
@@ -57,8 +63,11 @@ jobs:
           EVENT: ${{ github.event_name }}
           BRANCH: ${{ github.ref_name }}
           BRANCHES: ${{ inputs.review_branches }}
+          ENABLED: ${{ env.AI_REVIEW_ENABLED }}
         run: |
           run=false
+          # Công tắc tạm tắt (27/10/2026, main): 'false' thì không review gì cả, job vẫn SUCCESS để build needs: review chạy tiếp.
+          [ "$ENABLED" = true ] || { echo "run=false" >> "$GITHUB_OUTPUT"; echo "::notice title=AI review tạm tắt::Hết token LLM: commit/PR này KHÔNG được AI review."; exit 0; }
           case "$EVENT" in
             pull_request) run=true ;;
             push) case ",${BRANCHES// /}," in *",$BRANCH,"*) run=true ;; esac ;;
