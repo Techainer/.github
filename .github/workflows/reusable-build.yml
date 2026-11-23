@@ -82,7 +82,13 @@ jobs:
         run: |
           BR="${GITHUB_REF_NAME//\//-}"
           SHA="$(git rev-parse --short=7 HEAD)"
-          echo "tag=${BR}-${SHA}" >> "$GITHUB_OUTPUT"
+          # Tag bất biến: build lại cùng commit => tag mới (không ghi đè -> không stale deploy với IfNotPresent).
+          # <nhánh>-<sha7>-<run_number>[.<attempt>]; tag thân thiện <nhánh>-<sha7> vẫn được push thêm.
+          TAG="${BR}-${SHA}-${GITHUB_RUN_NUMBER}"
+          [ "${GITHUB_RUN_ATTEMPT}" -gt 1 ] && TAG="${TAG}.${GITHUB_RUN_ATTEMPT}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "friendly=${BR}-${SHA}" >> "$GITHUB_OUTPUT"
+          echo "br=${BR}" >> "$GITHUB_OUTPUT"
       - name: Prepare build-time .env (self-hosted disk)
         if: ${{ inputs.env_file_src != '' }}
         run: |
@@ -104,7 +110,16 @@ jobs:
           # cache-bust theo NỘI DUNG env: chống Docker tái dùng layer build của env khác (staging↔prod bleed).
           # Dockerfile phải có `ARG ENV_HASH` trước RUN build thì mới ăn.
           [ -f .env ] && ARGS+=(--build-arg "ENV_HASH=$(sha256sum .env | cut -d' ' -f1)")
-          docker build "${ARGS[@]}" -t "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" -f "${{ inputs.dockerfile }}" "${{ inputs.context }}"
+          # Scope cache mount (.next/cache) theo repo+nhánh: build song song trên runner chung không hỏng .sst của nhau.
+          ARGS+=(--build-arg "CACHE_SCOPE=${GITHUB_REPOSITORY##*/}-${{ steps.meta.outputs.br }}")
+          IMG="${{ inputs.image }}"; CACHE="$IMG:buildcache-${{ steps.meta.outputs.br }}"
+          # buildx + builder docker-container => cache layer registry (type=registry,mode=max) giữa các run. --load để Guard/push phía dưới dùng image local.
+          docker buildx inspect ci-builder >/dev/null 2>&1 || docker buildx create --name ci-builder --driver docker-container >/dev/null
+          docker buildx build --builder ci-builder "${ARGS[@]}" \
+            --cache-from "type=registry,ref=$CACHE" \
+            --cache-to "type=registry,ref=$CACHE,mode=max,ignore-error=true" \
+            -t "$IMG:${{ steps.meta.outputs.tag }}" -t "$IMG:${{ steps.meta.outputs.friendly }}" \
+            --load -f "${{ inputs.dockerfile }}" "${{ inputs.context }}"
       # GUARD (chỉ nhánh production): quét output build trong image TRƯỚC khi push; FAIL nếu bundle chứa host backend của staging
       # (URL có scheme tới api-staging., go-staging., hasura/auth-staging.) => bundle prod trỏ nhầm môi trường (env/cache staging lọt vào build prod).
       # Host staging khác (lms-staging, smart-class-staging, storage-staging...) nằm trong bảng ánh xạ host->môi trường của nhiều app
@@ -133,9 +148,11 @@ jobs:
           grep -rEIohi "$WARN_RE" "$OUT" | sort | uniq -c | sort -rn | head -10 | sed 's/^/::warning::host staging trong bundle prod (kiểm tay nếu là bảng ánh xạ): /' || true
           echo "guard OK: $N tệp đã quét, không có host backend staging"
       - name: Push
-        run: docker push "${{ inputs.image }}:${{ steps.meta.outputs.tag }}"
+        run: |
+          docker push "${{ inputs.image }}:${{ steps.meta.outputs.tag }}"
+          docker push "${{ inputs.image }}:${{ steps.meta.outputs.friendly }}"
       - name: Cleanup
         if: always()
         run: |
           sudo -n rm -f .env 2>/dev/null || rm -f .env
-          docker rmi "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" || true
+          docker rmi "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" "${{ inputs.image }}:${{ steps.meta.outputs.friendly }}" || true
