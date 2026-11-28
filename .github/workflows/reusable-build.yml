@@ -104,7 +104,18 @@ jobs:
           # cache-bust theo NỘI DUNG env: chống Docker tái dùng layer build của env khác (staging↔prod bleed).
           # Dockerfile phải có `ARG ENV_HASH` trước RUN build thì mới ăn.
           [ -f .env ] && ARGS+=(--build-arg "ENV_HASH=$(sha256sum .env | cut -d' ' -f1)")
+          # Cache PERSIST qua các lần build (inline cache). Khi buildkit local của runner bị dọn (prune) hoặc
+          # đổi runner, layer cài đặt/vite được phục hồi từ thẻ cache của lần trước thay vì cài lại native +
+          # build lại từ đầu. Thẻ cache theo NHÁNH (BR = môi trường) nên staging↔prod không lẫn. cache-from
+          # thiếu (lần đầu, hoặc thẻ chưa có) => buildkit BỎ QUA, không lỗi. BUILDKIT_INLINE_CACHE nhúng
+          # metadata cache vào chính image build ra.
+          BR="${GITHUB_REF_NAME//\//-}"
+          CACHE_REF="${{ inputs.image }}:${BR}-buildcache"
+          ARGS+=(--build-arg "BUILDKIT_INLINE_CACHE=1" --cache-from "$CACHE_REF")
           docker build "${ARGS[@]}" -t "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" -f "${{ inputs.dockerfile }}" "${{ inputs.context }}"
+          # Cập nhật thẻ cache trôi cho lần sau. NON-FATAL: push hỏng chỉ là cache-miss lần sau, KHÔNG làm vỡ build.
+          docker tag "${{ inputs.image }}:${{ steps.meta.outputs.tag }}" "$CACHE_REF" 2>/dev/null || true
+          docker push "$CACHE_REF" 2>/dev/null || echo "::warning::push thẻ cache $CACHE_REF hỏng (bỏ qua, chỉ mất cache lần sau)"
       # GUARD (chỉ nhánh production): quét output build trong image TRƯỚC khi push; FAIL nếu bundle chứa host backend của staging
       # (URL có scheme tới api-staging., go-staging., hasura/auth-staging.) => bundle prod trỏ nhầm môi trường (env/cache staging lọt vào build prod).
       # Host staging khác (lms-staging, smart-class-staging, storage-staging...) nằm trong bảng ánh xạ host->môi trường của nhiều app
